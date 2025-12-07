@@ -119,5 +119,7 @@ Once you fill this out, ChatGPT will produce:
 
 Here is the publically available github repo with ".md" files that describe my current endeavors.
 
+
+
 Take all of these inputs and provide a setup wizard with my choices and your observations with an interactive and iterative review of the requirements with observations, recommendations and tweaks to the final requirements.   As a result of completing the wizard, you should output a clean Prompt file "KAPMAN_ARCHITECTURE_PROMPT_1.0.MD" in MD format to be used to generate desired output.  I want to capture and version this MD prompt file in Github before proceeding.
 
