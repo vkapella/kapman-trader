@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'market-data-service'
+    static_configs:
+      - targets: ['market-data-service:8000']
+  
+  - job_name: 'order-execution-service'
+    static_configs:
+      - targets: ['order-execution-service:8000']
+  
+  - job_name: 'risk-management-service'
+    static_configs:
+      - targets: ['risk-management-service:8000']
+  
+  - job_name: 'portfolio-service'
+    static_configs:
+      - targets: ['portfolio-service:8000']

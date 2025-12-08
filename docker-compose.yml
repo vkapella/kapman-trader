@@ -1,0 +1,130 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://api:4000
+    container_name: kapman-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - api
+    networks:
+      - kapman-network
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: kapman-api
+    ports:
+      - "4000:4000"
+    environment:
+      - DATABASE_URL=postgresql://kapman:${DB_PASSWORD}@db:5432/kapman
+      - REDIS_URL=redis://redis:6379
+      - CORE_SERVICE_URL=http://core:5000
+      - NODE_ENV=development
+    depends_on:
+      - db
+      - redis
+      - core
+    networks:
+      - kapman-network
+    volumes:
+      - ./api:/app
+      - /app/node_modules
+
+  core:
+    build:
+      context: .
+      dockerfile: core/Dockerfile
+    container_name: kapman-core
+    ports:
+      - "5001:5000"
+    environment:
+      - DATABASE_URL=postgresql://kapman:${DB_PASSWORD}@db:5432/kapman
+      - REDIS_URL=redis://redis:6379
+      - AI_PROVIDER=${AI_PROVIDER:-claude}
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - POLYGON_API_KEY=${POLYGON_API_KEY}
+      - OHLCV_SOURCE=${OHLCV_SOURCE:-s3}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET=${S3_BUCKET}
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./core:/app
+    networks:
+      - kapman-network
+
+  db:
+    image: timescale/timescaledb:latest-pg15
+    container_name: kapman-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-kapman}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-kapman}
+      TIMESCALEDB_TELEMETRY: 'off'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-kapman} -d ${DB_NAME:-kapman}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kapman-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: kapman-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kapman-network
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@kapman.com
+      PGADMIN_DEFAULT_PASSWORD: admin123  # Change this in production!
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    networks:
+      - kapman-network
+    depends_on:
+      - db
+
+networks:
+  kapman-network:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  pgadmin-data:

@@ -1,0 +1,160 @@
+
+services:
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    networks:
+      - kapman-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend/nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - frontend
+      - market-data-service
+    networks:
+      - kapman-network
+
+  market-data-service:
+    build: ./market-data-service
+    container_name: market-data-service
+    expose:
+      - "8000"
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - kapman-network
+  order-execution-service:
+    build: ./order-execution-service
+    container_name: order-execution-service
+    expose:
+      - "8000"
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - kapman-network
+
+  risk-management-service:
+    build: ./risk-management-service
+    container_name: risk-management-service
+    expose:
+      - "8000"
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - kapman-network
+
+  portfolio-service:
+    build: ./portfolio-service
+    container_name: portfolio-service
+    expose:
+      - "8000"
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - kapman-network
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=kapman_trading
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - kapman-network
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - kapman-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - kapman-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - kapman-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    networks:
+      - kapman-network
+
+networks:
+  kapman-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:
