@@ -1,20 +1,27 @@
 global:
   scrape_interval: 15s
-  evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'market-data-service'
+  - job_name: 'prometheus'
     static_configs:
-      - targets: ['market-data-service:8000']
-  
-  - job_name: 'order-execution-service'
+      - targets: ['localhost:9090']
+
+  - job_name: 'node'
     static_configs:
-      - targets: ['order-execution-service:8000']
-  
-  - job_name: 'risk-management-service'
+      - targets: ['node-exporter:9100']
+
+  - job_name: 'postgres'
     static_configs:
-      - targets: ['risk-management-service:8000']
-  
-  - job_name: 'portfolio-service'
+      - targets: ['db:5432']
+    metrics_path: /metrics
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: postgres-exporter:9187
+
+  - job_name: 'redis'
     static_configs:
-      - targets: ['portfolio-service:8000']
+      - targets: ['redis:9121']
