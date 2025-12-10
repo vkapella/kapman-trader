@@ -1,112 +1,86 @@
-import unittest
-from unittest.mock import MagicMock, patch
-import asyncio
-from core.providers.ai.claude import ClaudeProvider
+import pytest
+from unittest.mock import patch, MagicMock
 from core.providers.ai.base import AnalysisContext, Recommendation
+from core.providers.ai.claude import ClaudeProvider
+import json
 
-class TestClaudeProvider(unittest.TestCase):
-    """Test cases for ClaudeProvider."""
-    
-    def setUp(self):
-        """Set up test fixtures."""
-        self.provider = ClaudeProvider(api_key="test-key")
-        self.test_context = AnalysisContext(
+@pytest.mark.asyncio
+class TestClaudeProvider:
+    @pytest.fixture
+    def test_context(self):
+        """Fixture for test AnalysisContext."""
+        return AnalysisContext(
             symbol="AAPL",
             wyckoff_phase="Phase B",
-            phase_confidence=0.85,
+            phase_confidence=85,
             events_detected=["Spring", "Test"],
             bc_data={"phase": "accumulation", "sentiment": "bullish"},
             available_strikes=[150.0, 155.0, 160.0],
-            available_expirations=["2025-12-15", "2025-12-22"]
+            available_expirations=["2025-12-15", "2025-12-22"],
+            bc_score=80,
+            spring_score=70,
+            technical_indicators={"rsi": 65, "macd": "bullish"},
+            dealer_metrics={"inventory": "high", "positioning": "long"}
         )
-        
-    @patch('anthropic.Anthropic')
-    async def test_generate_recommendation(self, mock_anthropic):
-        """Test generating a trading recommendation."""
-        # Mock the Claude API response
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
 
-        mock_message = MagicMock()
-        mock_message.content = [{
-            "text": """{
-                "symbol": "AAPL",
-                "direction": "LONG",
-                "action": "BUY",
-                "confidence": 0.85,
-                "strategy": "LONG_CALL",
-                "strike": 155.0,
-                "expiration": "2025-12-15",
-                "entry_target": 152.5,
-                "stop_loss": 148.0,
-                "profit_target": 165.0,
-                "justification": "Bullish technicals and positive dealer flow"
-            }"""
-        }]
-
-        mock_client.messages.create.return_value = mock_message
-
-        # Test the method
-        recommendation = await self.provider.generate_recommendation(self.test_context)
-
-        # Verify the results
-        self.assertIsInstance(recommendation, Recommendation)
-        self.assertEqual(recommendation.symbol, "AAPL")
-        self.assertEqual(recommendation.direction, "LONG")
-        self.assertEqual(recommendation.action, "BUY")
-        
-    @patch('anthropic.Anthropic')
-    async def test_generate_justification(self, mock_anthropic):
-        """Test generating a trading justification."""
-        # Mock the Claude API response
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
-
-        test_recommendation = Recommendation(
+    @pytest.fixture
+    def test_recommendation(self):
+        """Fixture for test Recommendation."""
+        return Recommendation(
             symbol="AAPL",
             direction="LONG",
             action="BUY",
-            confidence=0.85,
-            strategy="LONG_CALL",
-            strike=155.0,
-            expiration="2025-12-15",
-            entry_target=152.5,
-            stop_loss=148.0,
+            strategy="Wyckoff Spring",
+            entry_target=150.0,
+            stop_loss=145.0,
             profit_target=165.0,
-            justification="Test justification"
+            justification="Test justification",
+            confidence=0.9
         )
 
-        mock_message = MagicMock()
-        mock_message.content = [{"text": "This is a detailed justification for the trade."}]
-        mock_client.messages.create.return_value = mock_message
+    @pytest.fixture
+    def provider(self):
+        """Fixture for ClaudeProvider instance."""
+        return ClaudeProvider(api_key="test-key")
 
-        # Test the method
-        justification = await self.provider.generate_justification(
-            recommendation=test_recommendation,
-            context=self.test_context
-        )
+    @pytest.mark.unit
+    async def test_generate_justification(self, provider, test_context, test_recommendation):
+        """Test generating a justification."""
+        # Create a mock response for the synchronous API call
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="Test justification")]
+        
+        with patch.object(provider.client.messages, 'create', return_value=mock_response) as mock_create:
+            result = await provider.generate_justification(
+                recommendation=test_recommendation,
+                context=test_context
+            )
+            assert "Test justification" in result
+            mock_create.assert_called_once()
 
-        # Verify the results
-        self.assertIsInstance(justification, str)
-        self.assertIn("justification", justification.lower())
-
-    def run_async(self, coro):
-        """Run an async test."""
-        return asyncio.get_event_loop().run_until_complete(coro)
-
-    def test_generate_recommendation_sync(self):
-        """Test generate_recommendation in a sync context."""
-        with patch.object(self.provider, 'generate_recommendation') as mock_method:
-            mock_method.return_value = "test_recommendation"
-            result = self.run_async(self.test_generate_recommendation(None))
-            self.assertIsNotNone(result)
-
-    def test_generate_justification_sync(self):
-        """Test generate_justification in a sync context."""
-        with patch.object(self.provider, 'generate_justification') as mock_method:
-            mock_method.return_value = "test_justification"
-            result = self.run_async(self.test_generate_justification(None))
-            self.assertIsNotNone(result)
-
-if __name__ == '__main__':
-    unittest.main()
+    @pytest.mark.unit
+    async def test_generate_recommendation(self, provider, test_context):
+        """Test generating a recommendation."""
+        # Create a properly formatted JSON string for the mock response
+        recommendation_data = {
+            "symbol": "AAPL",
+            "direction": "LONG",
+            "action": "BUY",
+            "strategy": "Wyckoff Spring",
+            "entry_target": 150.0,
+            "stop_loss": 145.0,
+            "profit_target": 165.0,
+            "justification": "Test justification",
+            "confidence": 0.9
+        }
+        
+        # Create a mock response for the synchronous API call
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=json.dumps(recommendation_data))]
+        
+        with patch.object(provider.client.messages, 'create', return_value=mock_response) as mock_create:
+            result = await provider.generate_recommendation(context=test_context)
+            assert isinstance(result, Recommendation)
+            assert result.symbol == "AAPL"
+            assert result.direction == "LONG"
+            mock_create.assert_called_once()
