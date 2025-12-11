@@ -64,3 +64,8 @@ build/
 ehthumbs.db
 Thumbs.db
 .env.backup
+
+.venv/
+.pytest_cache/
+frontend/node_modules, frontend/.next/
+api/node_moduleskapman.egg-info
