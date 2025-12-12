@@ -1,43 +1,26 @@
-from contextlib import asynccontextmanager
+import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-import os
-from typing import AsyncGenerator
 
-# Get database URL from environment
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable is required")
+# Async DB URL required for async engine
+db_url = os.getenv("ASYNC_DATABASE_URL")
+if not db_url:
+    raise RuntimeError("ASYNC_DATABASE_URL is not set. Please define it in your .env file.")
 
-# Create async engine with connection pooling
+# Create async engine
 engine = create_async_engine(
-    DATABASE_URL,
+    db_url,
+    future=True,
     echo=False,
-    pool_size=5,
-    max_overflow=10,
-    pool_timeout=30,
-    pool_recycle=1800,
-    pool_pre_ping=True,
 )
 
 # Create async session factory
-AsyncSessionLocal = sessionmaker(
+async_session = sessionmaker(
     bind=engine,
-    class_=AsyncSession,
     expire_on_commit=False,
-    autocommit=False,
-    autoflush=False,
+    class_=AsyncSession,
 )
 
-@asynccontextmanager
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Async context manager for database sessions."""
-    session = AsyncSessionLocal()
-    try:
+async def get_db_session():
+    async with async_session() as session:
         yield session
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
