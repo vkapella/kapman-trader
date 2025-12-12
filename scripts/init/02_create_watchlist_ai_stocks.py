@@ -41,37 +41,67 @@ def ensure_portfolio_exists(name):
     return new_id
 
 def load_ai_stocks_watchlist(portfolio_id, symbols):
+    """
+    Insert ticker_id rows into portfolio_tickers for the given portfolio.
+    """
     session = get_db_session()
+    try:
+        # Fetch ticker_id for each symbol
+        ticker_rows = session.execute(
+            text("""
+                SELECT id, symbol
+                FROM tickers
+                WHERE symbol = ANY(:symbols)
+            """),
+            {"symbols": symbols}
+        ).fetchall()
 
-    rows = session.execute(text("""
-        SELECT symbol
-        FROM tickers
-        WHERE symbol = ANY(:symbols)
-    """), {"symbols": symbols}).fetchall()
+        ticker_map = {row.symbol: row.id for row in ticker_rows}
 
-    found_symbols = [r[0] for r in rows]
+        missing = [s for s in symbols if s not in ticker_map]
+        if missing:
+            logger.warning(f"Symbols not found in tickers table: {missing}")
 
-    if not found_symbols:
-        logger.warning("None of the AI stock tickers exist in the ticker universe.")
-        return {"inserted": 0, "duplicates": 0}
+        # Fetch existing rows to avoid duplicates
+        existing = session.execute(
+            text("""
+                SELECT ticker_id
+                FROM portfolio_tickers
+                WHERE portfolio_id = :pid
+            """),
+            {"pid": portfolio_id}
+        ).fetchall()
 
-    inserted = 0
-    duplicates = 0
+        existing_ids = {row.ticker_id for row in existing}
 
-    for sym in found_symbols:
-        try:
-            session.execute(text("""
-                INSERT INTO portfolio_tickers (portfolio_id, symbol)
-                VALUES (:pid, :symbol)
-                ON CONFLICT DO NOTHING
-            """), {"pid": portfolio_id, "symbol": sym})
+        inserted = 0
+        duplicates = 0
+        for sym in symbols:
+            tid = ticker_map.get(sym)
+            if not tid:
+                continue
+            if tid in existing_ids:
+                duplicates += 1
+                continue
+
+            session.execute(
+                text("""
+                    INSERT INTO portfolio_tickers (portfolio_id, ticker_id)
+                    VALUES (:pid, :tid)
+                """),
+                {"pid": portfolio_id, "tid": tid}
+            )
             inserted += 1
-        except Exception:
-            duplicates += 1
 
-    session.commit()
+        session.commit()
+        return {"inserted": inserted, "duplicates": duplicates}
 
-    return {"inserted": inserted, "duplicates": duplicates}
+    except Exception as e:
+        logger.error(f"Error loading AI stocks: {e}", exc_info=True)
+        session.rollback()
+        return {"inserted": 0, "duplicates": 0}
+    finally:
+        session.close()
 
 def main():
     logger.info("Starting AI_STOCKS watchlist creation")
