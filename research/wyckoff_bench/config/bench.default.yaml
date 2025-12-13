@@ -1,0 +1,46 @@
+run_id: default
+symbols:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMD
+  - AMZN
+  - META
+  - GOOGL
+  - TSLA
+  - NFLX
+  - AVGO
+  - CRM
+  - ORCL
+  - INTC
+  - QCOM
+  - SHOP
+  - RBLX
+  - SNOW
+  - PLTR
+  - ASML
+  - IBM
+
+loader:
+  lookback_trading_days: 730
+  cache_dir: research/wyckoff_bench/outputs/cache
+
+implementations:
+  - kapman_v0_handwritten_structural
+  - kapman_v0_claude
+  - kapman_v0_chatgpt_wyckoff_core
+  - baseline_vsa
+  - baseline_tv_heuristic
+  - baseline_hybrid_rules
+
+impl_cfg:
+  kapman_v0_handwritten_structural:
+    wyckoff_config: docs/research_inputs/wyckoff_config.json
+    phases_config: docs/research_inputs/structural_phases_v1.json
+  kapman_v0_chatgpt_wyckoff_core:
+    rules_doc: docs/research_inputs/KapMan_Deterministic_Schematic_Rules_v2.2.md
+    wyckoff_config: docs/research_inputs/wyckoff_config.json
+  kapman_v0_claude:
+    prompt_doc: docs/research_inputs/claude-kapman-trader-architecture-prompt-v1.0.md
+  baseline_hybrid_rules:
+    lookback: 60
