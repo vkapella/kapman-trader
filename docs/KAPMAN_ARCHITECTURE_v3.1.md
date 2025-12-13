@@ -1,5 +1,5 @@
 # KAPMAN TRADING SYSTEM - ARCHITECTURE & IMPLEMENTATION PROMPT
-**Version:** 3.1  
+**Version:** 3.2  
 **Date:** December 12, 2025  
 **Status:** Ready for Sprint 2.2 Implementation  
 **Target MVP:** December 31, 2025
@@ -87,6 +87,7 @@ Build an automated trading decision-support system that:
 | 1.0 | 2025-12-07 | Initial architecture |
 | 2.0 | 2025-12-09 | Enhanced schema (45+ columns), full universe OHLCV, options summary table, revised Sprint 2 |
 | 3.0 | 2025-12-11 | **TDD testing strategy**, **Mac-only deployment**, **environment promotion**, **initial data seeding**, **140-ticker watchlist**, removed cloud deployment from MVP |
+| 3.2 | 2025-12 | Wyckoff benchmark results incorporated; Sprint 2 sequencing clarified; Metrics enrichment formally positioned; Wyckoff logic marked as research-validated, not final |
 
 ---
 
@@ -561,7 +562,7 @@ Sprint 4: Dec 28-31     │ Hardening & Environment Setup
 |--------|--------|--------|
 | Sprint 0.5: Data Seeding | 8 | 🆕 NEW |
 | Sprint 1: Infrastructure | 21 | ✅ DONE |
-| Sprint 2.0: Base OHLCV Loader | 8 | 🔄 IN PROGRESS |
+| Sprint 2.0: Base OHLCV Loader | 8 | ✅ COMPLETED |
 | Sprint 2.1+: Wyckoff & Pipeline | 20 | 🔄 IN PROGRESS |
 | Sprint 3: Recommendations & UI | 18 | Planned |
 | Sprint 4: Hardening & Environments | 12 | REVISED |
@@ -616,17 +617,19 @@ python scripts/init/04_validate_data.py
 ## 13. SPRINT 2: WYCKOFF ENGINE & PIPELINE
 
 **Duration:** December 14-20, 2025 | **Points:** 28  
-**Structure:** Split into Sprint 2.0 (Base OHLCV Loader) and Sprint 2.1+ (Analytical Layer).
+**Structure:** Sprint 2 reordered into 2.0 (Base), 2.1 (Metrics Foundations), 2.2 (Wyckoff Events), 2.3 (Scoring/Refinement).
 
-- **Sprint 2.0 (Dec 14-16):** Build the Base OHLCV Loader that ingests Massive daily aggregates for *all* tickers, enforces 730-day retention, and exposes deterministic data for downstream jobs.
-- **Sprint 2.1+ (Dec 17-20):** Run watchlist analytics (Wyckoff, options, indicators) exclusively against the Base layer—no direct S3 reads.
+- **Sprint 2.0 (Dec 14-16):** Build the Base OHLCV Loader that ingests Massive daily aggregates for *all* tickers, enforces 730-day retention, and exposes deterministic data for downstream jobs. **Status:** Completed.
+- **Sprint 2.1 (Metrics & Market Structure Foundations):** Introduce Technical Indicators (RSI, MACD, ADX, OBV, ATR, etc.), Dealer Metrics (GEX, DGPI, gamma flip, call/put walls), Volatility Metrics (IV term structure, skew, HV/IV). Metrics sourced from Polygon MCP or equivalent provider and stored independently of Wyckoff conclusions.
+- **Sprint 2.2 (Wyckoff Event Detection Engine — Current Focus):** Wyckoff logic operates on OHLCV + enriched metrics from Sprint 2.1; events: SC, AR, ST, SPRING, TEST, SOS, SOW, BC; direction-aware ENTRY/EXIT semantics; explicit separation of event detection vs trade interpretation; research-benchmarked logic, not final trading logic.
+- **Sprint 2.3 (Wyckoff Scoring & Algorithm Refinement — Future):** BC Score (0–28), Spring Score (0–12), Composite Score; scoring weights SUBJECT TO CHANGE. NOTE: Results from metrics enrichment testing in Sprint 2.1 and empirical benchmarking may require modifications to Wyckoff event logic prior to finalization of scoring in Sprint 2.3.
 
-### 13.1 Sprint 2.0 — Base OHLCV Loader (NEW)
+### 13.1 Sprint 2.0 — Base OHLCV Loader (COMPLETED)
 
 | Story | Points | Status | Description |
 |-------|--------|--------|-------------|
-| 2.0.1 Base Loader Implementation | 5 | 🔄 IN PROGRESS | Download daily Massive files, bulk insert `ohlcv`, handle ticker_id resolution |
-| 2.0.2 Retention & Compression Guardrails | 3 | Planned | Enforce 730-day retention, configure Timescale compression policy |
+| 2.0.1 Base Loader Implementation | 5 | ✅ COMPLETED | Download daily Massive files, bulk insert `ohlcv`, handle ticker_id resolution |
+| 2.0.2 Retention & Compression Guardrails | 3 | ✅ COMPLETED | Enforce 730-day retention, configure Timescale compression policy |
 
 **Acceptance Criteria**
 - Loads one Massive file per trading day covering the requested date range (default 730 days).  
@@ -635,60 +638,32 @@ python scripts/init/04_validate_data.py
 - Deletes (or compresses) data older than 730 trading days immediately after each run.  
 - Provides deterministic data for all downstream pipelines; no watchlist job is allowed to query S3.
 
-### 13.2 Sprint 2.1+ — Analytical Layer
+### 13.2 Sprint 2 — Detailed Breakdown (v3.2)
 
-| Story | Points | Status | Description |
-|-------|--------|--------|-------------|
-| 2.1.1 Options Chain Pipeline | 6 | 🔄 NEXT | Watchlist options + summary tables fed by base `ohlcv` |
-| 2.1.2 Metrics Integration | 4 | Planned | Polygon MCP metrics; consumes base OHLCV only |
-| 2.1.3 Wyckoff Engine Migration | 6 | Planned | 8 events, BC/Spring scoring powered by persisted base data |
-| 2.1.4 Daily Batch Orchestrator | 6 | Planned | Orders: Base Loader → Analytics → Recommendations |
-| 2.1.5 Watchlist Validation | 4 | Planned | Ensures analytics never query S3 directly |
+#### Sprint 2.1 — Metrics & Market Structure Foundations
+- Introduce Technical Indicators (RSI, MACD, ADX, OBV, ATR, etc.).  
+- Introduce Dealer Metrics (GEX, DGPI, gamma flip, call/put walls).  
+- Introduce Volatility Metrics (IV term structure, skew, HV/IV).  
+- Metrics sourced from Polygon MCP or equivalent provider and stored independently of Wyckoff conclusions.
 
-### Story 2.1.1: Options Chain Pipeline (6 pts)
+#### Sprint 2.2 — Wyckoff Event Detection Engine (CURRENT FOCUS)
+- Wyckoff logic operates on OHLCV + enriched metrics from Sprint 2.1.  
+- Events implemented: SC, AR, ST, SPRING, TEST, SOS, SOW, BC.  
+- Direction-aware ENTRY / EXIT semantics.  
+- Explicit separation of event detection vs trade interpretation.  
+- Uses research-benchmarked logic, not final trading logic.
 
-#### Test Specification (TDD)
+#### Sprint 2.3 — Wyckoff Scoring & Algorithm Refinement (FUTURE)
+- BC Score (0–28), Spring Score (0–12), Composite Score.  
+- Scoring weights SUBJECT TO CHANGE.  
+- NOTE: Results from metrics enrichment testing in Sprint 2.1 and empirical benchmarking may require modifications to Wyckoff event logic prior to finalization of scoring in Sprint 2.3.
 
-**Unit Tests:**
-| Test Case | Expected |
-|-----------|----------|
-| test_fetch_options_chain_success | List[OptionsContract] returned |
-| test_fetch_options_chain_no_options | Empty list, no error |
-| test_aggregate_summary | Summary with walls calculated |
-| test_calculate_put_call_ratio | Correct ratio |
-| test_rate_limiting | Respects 100 RPS |
-
-**Integration Tests:**
-| Test Case | Assertion |
-|-----------|-----------|
-| test_options_stored_in_db | Row in options_chains |
-| test_summary_aggregated | Row in options_daily_summary |
-| test_full_watchlist_load | 140 summaries created |
-
-**Acceptance Criteria:**
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] Coverage ≥ 80%
-- [ ] 140 symbols processed in < 10 minutes
-- [ ] Queries base `ohlcv` for historical candles (no S3 access)
-
-### Story 2.1.3: Wyckoff Engine Migration (6 pts)
-
-#### Test Specification (TDD)
-
-**Unit Tests (tests/unit/wyckoff/):**
-
-| Test File | Test Cases |
-|-----------|------------|
-| test_phase.py | test_classify_accumulation, test_classify_distribution, test_confidence_calculation |
-| test_events.py | test_detect_selling_climax, test_detect_spring, test_detect_buying_climax, test_no_false_positives |
-| test_scoring.py | test_bc_score_max (28), test_bc_score_zero, test_spring_score_max (12), test_composite_score |
-
-**Acceptance Criteria:**
-- [ ] All unit tests pass
-- [ ] Coverage ≥ 80% for wyckoff module
-- [ ] 8 events detected with confidence scores
-- [ ] BC score (0-28) and Spring score (0-12) calculated correctly
+#### Wyckoff Benchmark Findings (Research-Only)
+- Structural Wyckoff logic showed superior precision at SPRING (UP ENTRY) and BC (DOWN / EXIT) events.  
+- High-frequency signal generators (TV heuristics, VSA) produced higher volume but weaker risk-adjusted outcomes.  
+- ChatGPT-derived Wyckoff logic required metric normalization to be reliable.  
+- These findings inform Sprint 2.2 but do not freeze algorithm design.  
+- The Wyckoff engine remains an adaptive analytical component; its rules, thresholds, and scoring may evolve based on metric validation and empirical performance prior to MVP finalization.
 
 ---
 

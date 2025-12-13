@@ -1,5 +1,5 @@
 # KAPMAN TRADING SYSTEM – WINDSURF DEVELOPMENT GUIDE
-**Version:** 3.1  
+**Version:** 3.2  
 **Date:** December 2025  
 **Purpose:** Provide a predictable, high-quality workflow for using Windsurf (Cascade) with the Kapman Trading System architecture during all development sprints.
 
@@ -40,8 +40,8 @@ Before each development session:
 
 | Document | Purpose |
 |----------|----------|
-| **KAPMAN_ARCHITECTURE_v3.1.md** | Defines system architecture, data layers, DB schema, sprints |
-| **WINDSURF_GUIDE_v3.1.md** | Defines development workflow, prompts, coding procedures |
+| **KAPMAN_ARCHITECTURE_v3.2.md** | Defines system architecture, data layers, DB schema, sprints |
+| **WINDSURF_GUIDE_v3.2.md** | Defines development workflow, prompts, coding procedures |
 
 Uploading both files ensures Cascade has full project context.
 
@@ -400,3 +400,8 @@ daily_snapshots contains 45+ metrics
 ```
 
 # END OF WINDSURF_GUIDE_v3.1.md
+# Sprint 2 Execution Guidance (v3.2)
+- For Sprint 2.2 work: implement Wyckoff logic cleanly, avoid premature optimization, and treat metrics as inputs rather than conclusions.  
+- Metric testing may invalidate assumptions; keep Wyckoff logic modular and refactorable.
+
+> **NOTE (Story 2.3):** Do not lock scoring weights, thresholds, or signal semantics prior to completing metric enrichment validation. Changes to Wyckoff logic are expected.

@@ -1,0 +1,81 @@
+{
+  "configId": "structural_v1",
+  "description": "Baseline structural Wyckoff config for daily bars, liquid mid/large caps",
+
+  "data_window": {
+    "lookback_bars": 260,
+    "min_bars_for_events": 80
+  },
+  "normalization": {
+    "vol_lookback": 20,
+    "range_lookback": 20,
+    "vol_zscore_clip": 4.0,
+    "range_zscore_clip": 4.0
+  },
+
+  "structural": {
+    "min_phase_length_bars": 10,
+    "max_gap_between_events_bars": 5,
+    "min_range_persistence_bars": 15,
+    "min_markup_slope_pct_per_bar": 0.10,
+    "min_markdown_slope_pct_per_bar": -0.10
+  },
+
+  "events": {
+    "sc": {
+      "volume_zscore_min": 2.0,
+      "range_zscore_min": 2.0,
+      "close_in_upper_frac_min": 0.4,
+      "lookback_for_downtrend_bars": 20,
+      "min_prior_drawdown_pct": 8.0
+    },
+    "spring": {
+      "support_lookback_bars": 80,
+      "break_below_support_pct_min": 1.0,
+      "max_bars_below_support": 3,
+      "reentry_close_above_support_tol_pct": -0.2,
+      "min_reversal_volume_z": 0.5
+    },
+    "sos": {
+      "resistance_lookback_bars": 80,
+      "break_above_resistance_pct_min": 1.0,
+      "volume_zscore_min": 1.0,
+      "followthrough_bars_min": 3,
+      "allow_small_throwback": true
+    },
+    "bc": {
+      "volume_zscore_min": 2.0,
+      "range_zscore_min": 2.0,
+      "close_in_upper_frac_min": 0.6,
+      "lookback_for_uptrend_bars": 20,
+      "min_prior_runup_pct": 8.0
+    },
+    "ut": {
+      "resistance_lookback_bars": 80,
+      "break_above_resistance_pct_min": 1.0,
+      "max_bars_outside_range": 3,
+      "volume_zscore_min": 0.5,
+      "require_bearish_followthrough": true
+    },
+    "sow": {
+      "support_lookback_bars": 80,
+      "break_below_support_pct_min": 1.0,
+      "volume_zscore_min": 1.0,
+      "followthrough_bars_min": 3
+    }
+  },
+
+  "phase_logic": {
+    "min_events_for_accumulation": 2,
+    "min_events_for_distribution": 2,
+    "require_spring_for_high_conf_accumulation": false,
+    "require_ut_for_high_conf_distribution": false
+  },
+
+  "labeling": {
+    "fill_mode": "forward",
+    "allow_phase_overlap": false,
+    "max_unlabeled_gap_bars": 3,
+    "default_phase": null
+  }
+}

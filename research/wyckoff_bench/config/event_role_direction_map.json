@@ -1,0 +1,10 @@
+{
+  "SPRING": { "direction": "UP", "role": "ENTRY" },
+  "SOS":    { "direction": "UP", "role": "ENTRY" },
+  "TEST":   { "direction": "UP", "role": "ENTRY" },
+  "BC":     { "direction": "DOWN", "role": "ENTRY" },
+  "SOW":    { "direction": "DOWN", "role": "ENTRY" },
+  "ST":     { "direction": "DOWN", "role": "ENTRY" },
+  "SC":     { "direction": "NA", "role": "IGNORE" },
+  "AR":     { "direction": "NA", "role": "IGNORE" }
+}

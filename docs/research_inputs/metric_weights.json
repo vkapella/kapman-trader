@@ -1,0 +1,40 @@
+{
+  "version": "1.2.0",
+  "active_profile": "balanced",
+  "weights": {
+    "RSI": 0.27,
+    "ADX": 0.21,
+    "HV": 0.15,
+    "ATR": 0.1,
+    "IV_RANK": 0.15,
+    "GEX": 0.1,
+    "SKEW": 0.05,
+    "IV_SKEW": 0.1,
+    "IV_TERM": 0.1,
+    "GEX_SLOPE": 0.1,
+    "GAMMA_FLIP": 0.1
+  },
+  "render_weight": {
+    "Static": 0.8,
+    "Mixed": 0.8,
+    "Dynamic": 0.9
+  },
+  "weight_profiles": {
+    "balanced": {
+      "description": "Balanced weighting across all metrics",
+      "weights": {
+        "RSI": 0.25,
+        "ADX": 0.2,
+        "HV": 0.15,
+        "ATR": 0.1,
+        "IV_RANK": 0.15,
+        "GEX": 0.1,
+        "SKEW": 0.05,
+        "IV_SKEW": 0.1,
+        "IV_TERM": 0.1,
+        "GEX_SLOPE": 0.1,
+        "GAMMA_FLIP": 0.1
+      }
+    }
+  }
+}
