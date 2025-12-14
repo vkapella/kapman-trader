@@ -68,4 +68,4 @@ Thumbs.db
 .venv/
 .pytest_cache/
 frontend/node_modules, frontend/.next/
-api/node_moduleskapman.egg-info
+api/node_moduleskapman.egg-infodb/*.sql
