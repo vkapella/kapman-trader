@@ -29,8 +29,8 @@ Before each development session:
 2. Open your `kapman-trader` folder  
 3. Start Docker (if using containers)  
 4. **Tell Cascade to read both:**
-   - `docs/KAPMAN_ARCHITECTURE_v3.1.md`
-   - `docs/WINDSURF_GUIDE_v3.1.md`  
+   - `docs/architecture/KAPMAN_ARCHITECTURE.md`
+   - `docs/guides/WINDSURF_GUIDE.md`  
 5. Wait for Cascade to confirm  
 6. Begin working on your chosen Sprint Story
 
@@ -40,8 +40,8 @@ Before each development session:
 
 | Document | Purpose |
 |----------|----------|
-| **KAPMAN_ARCHITECTURE_v3.2.md** | Defines system architecture, data layers, DB schema, sprints |
-| **WINDSURF_GUIDE_v3.2.md** | Defines development workflow, prompts, coding procedures |
+| **KAPMAN_ARCHITECTURE.md** | Defines system architecture, data layers, DB schema, sprints |
+| **WINDSURF_GUIDE.md** | Defines development workflow, prompts, coding procedures |
 
 Uploading both files ensures Cascade has full project context.
 
@@ -51,9 +51,13 @@ Uploading both files ensures Cascade has full project context.
 
 ```
 kapman-trader/
-├── KAPMAN_ARCHITECTURE_v3.1.md
 ├── docs/
-│   └── WINDSURF_GUIDE_v3.1.md
+│   ├── architecture/
+│   │   └── KAPMAN_ARCHITECTURE.md
+│   └── guides/
+│   |   └── WINDSURF_GUIDE.md
+│   └──sprints/
+│   |   └── sprint_2.1_metrics_and_market_structure.md
 ├── core/
 │   ├── providers/
 │   ├── pipeline/
