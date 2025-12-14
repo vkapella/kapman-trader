@@ -32,6 +32,7 @@ These metrics are produced as **independent, reusable inputs** for downstream sy
 
 Sprint 2.1 explicitly does **not** perform scoring, strategy selection, or trade recommendation.
 
+Numeric configuration values for dealer metrics (e.g., DTE window size) are intentionally deferred to Sprint 2.2+, where strategy-specific and regime-specific tuning is introduced.
 ---
 
 ## 2.1 Executive Summary (One-Page View)
@@ -45,25 +46,6 @@ By the end of this sprint:
 * Downstream logic (Wyckoff, scoring, recommendations) can operate without special-case handling
 
 This sprint deliberately favors **speed to insight** over exhaustive historical completeness while preserving a clean path to full backfill and future expansion.
-
----
-
-## 2. Sprint Objective (Canonical)
-
-**Sprint 2.1 establishes the metrics foundation required for decisionable intelligence.**
-
-The sprint computes, normalizes, and persists market metrics derived from:
-
-* Daily OHLCV data
-* Options chain data
-
-These metrics are produced as **independent, reusable inputs** for downstream systems, including:
-
-* Wyckoff event detection
-* Regime classification
-* Scoring and recommendations
-
-Sprint 2.1 explicitly does **not** perform scoring, strategy selection, or trade recommendation.
 
 ---
 
@@ -121,28 +103,31 @@ These will be introduced in later sprints once metric integrity is proven.
 
 ## 5. Metric Families (Sprint 2.1 Scope)
 
-### 5.1 OHLCV‑Derived Technical Indicators
+Sprint 2.1 is responsible for computing and persisting **foundational market-structure metrics** derived directly from raw market data. These metrics are produced as **independent, reusable inputs** for downstream systems and contain **no embedded interpretation or strategy logic**.
 
-* RSI (14)
-* MACD (12, 26, 9)
-* ADX (14)
-* OBV
-* ATR (14 or 20)
+### 5.1 OHLCV-Derived Metrics
 
-### 5.2 Dealer / Positioning Metrics (Options‑Derived)
+Metrics derived exclusively from daily OHLCV data, capturing momentum, trend strength, range, and volume-based characteristics of price behavior.
 
-* Aggregate GEX
-* Delta‑weighted exposure (DGPI or equivalent)
-* Gamma flip level
-* Call wall and put wall levels
+These metrics provide time-series context for downstream pattern detection and regime analysis but do not encode trading signals.
 
-### 5.3 Volatility Metrics
+---
 
-* ATM implied volatility
-* IV term structure (front vs back)
-* IV skew (call vs put)
-* Historical volatility
-* HV / IV ratios
+### 5.2 Dealer Positioning & Gamma Structure Metrics (Options-Derived)
+
+Metrics derived from options chain data that describe dealer positioning and near-term market structure, including gamma concentration and structural price interaction levels.
+
+These metrics characterize the options-driven forces influencing price behavior without inferring dealer intent or market direction.
+
+---
+
+### 5.3 Volatility Structure Metrics
+
+Metrics describing the shape and state of implied and realized volatility across time and option moneyness.
+
+These metrics provide volatility context for downstream regime classification and risk assessment without performing comparative scoring or normalization.
+
+---
 
 ---
 
@@ -254,20 +239,6 @@ Triggered nightly:
 
 ---
 
-## 9. Required Spikes
-
-### Mandatory
-
-* Dealer metrics methodology definition
-* Metric schema finalization
-
-### Optional
-
-* Indicator library evaluation
-* Performance profiling
-* Storage growth projections
-
----
 
 ## 10. Sprint Exit Criteria
 
