@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kapman-trader/schemas/realized_volatility_config.schema.json",
+  "title": "Realized Volatility Config",
+  "description": "Structural contract for realized volatility configuration without numeric assumptions or defaults.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "window_definition": {
+      "type": "object",
+      "description": "Definition of the realized volatility window construction method.",
+      "properties": {
+        "method": {
+          "type": "string",
+          "description": "Name of the windowing method."},
+        "parameters": {
+          "type": "object",
+          "description": "Opaque parameters for the windowing method."}
+      },
+      "required": ["method", "parameters"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["window_definition"]
+}

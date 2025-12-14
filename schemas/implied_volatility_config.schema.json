@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kapman-trader/schemas/implied_volatility_config.schema.json",
+  "title": "Implied Volatility Config",
+  "description": "Structural contract for implied volatility configuration without surface or DTE assumptions.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "surface_definition": {
+      "type": "object",
+      "description": "Definition of the implied volatility surface construction method.",
+      "properties": {
+        "method": {
+          "type": "string",
+          "description": "Name of the surface definition method."},
+        "parameters": {
+          "type": "object",
+          "description": "Opaque parameters for the surface definition method."}
+      },
+      "required": ["method", "parameters"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["surface_definition"]
+}
