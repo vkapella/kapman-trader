@@ -5,6 +5,18 @@
 **Target MVP:** December 31, 2025
 
 ---
+## Document Responsibilities & Precedence
+
+This project is governed by three primary documents, each with a distinct and non-overlapping role:
+
+- **KAPMAN_ARCHITECTURE_v3.1.md** defines *what* the system is, *why* it exists, and the architectural, data, environment, sprint, and determinism constraints that all code must obey.
+- **WINDSURF_GUIDE_v3.1.md** defines *how* code is written, tested, and modified using Windsurf (Cascade) in alignment with the architecture.
+- **KAPMAN_RESEARCH_ARCHITECTURE_v1.0.md** defines *where experimentation is allowed* and the isolation rules that prevent research code from impacting production.
+
+If guidance conflicts, **Architecture overrides Execution**, and **Production overrides Research**.  
+Process instructions belong in the Windsurf guide; system intent belongs here.
+
+
 
 ## TABLE OF CONTENTS
 
@@ -548,9 +560,9 @@ PROD → ./scripts/env/promote-to-prod.sh
 ### 10.1 Timeline Overview
 
 ```
-Sprint 0.5: Dec 11-12   │ Initial Data Seeding (NEW)
+Sprint 0.5: Dec 11-12   │ Initial Data Seeding ✅ COMPLETED
 Sprint 1: Dec 7-13      │ Infrastructure ✅ COMPLETED
-Sprint 2.0: Dec 14-16   │ Base OHLCV Loader (NEW)
+Sprint 2.0: Dec 14-16   │ Base OHLCV Loader ✅ COMPLETED
 Sprint 2.1+: Dec 17-20  │ Wyckoff Engine & Pipeline (analytics consume base data)
 Sprint 3: Dec 21-27     │ Recommendations & Dashboard
 Sprint 4: Dec 28-31     │ Hardening & Environment Setup
@@ -560,7 +572,7 @@ Sprint 4: Dec 28-31     │ Hardening & Environment Setup
 
 | Sprint | Points | Status |
 |--------|--------|--------|
-| Sprint 0.5: Data Seeding | 8 | 🆕 NEW |
+| Sprint 0.5: Data Seeding | 8 | ✅ COMPLETED |
 | Sprint 1: Infrastructure | 21 | ✅ DONE |
 | Sprint 2.0: Base OHLCV Loader | 8 | ✅ COMPLETED |
 | Sprint 2.1+: Wyckoff & Pipeline | 20 | 🔄 IN PROGRESS |
