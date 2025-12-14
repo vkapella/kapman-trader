@@ -150,6 +150,18 @@ python scripts/init/load_ohlcv_base.py --days 730
 
 # 7. SPRINT WORKFLOW (COMPLETE)
 
+## Sprint Smoke Tests (Architecture Gate)
+- Purpose: Fast, read-only SQL checks that guard sprint-specific architectural invariants (not business logic).  
+- When: Mandatory before advancing past the protected sprints (currently Sprint 2.0.1 and 2.0.2).  
+- How they differ: Unit tests validate code paths; integration tests validate end-to-end flows; **smoke tests** validate infrastructure contracts (hypertables, retention, compression) and fail hard on drift.  
+- Run locally:
+```bash
+DATABASE_URL=postgres://... ./scripts/env/run_smoke_tests.sh
+```
+- Scope covered now:
+  - Sprint 2.0.1: `ohlcv_daily` exists and is a Timescale hypertable.
+  - Sprint 2.0.2: Retention policy drop_after=730d; compression enabled; compression policy ≈365d.
+
 ---
 
 ## SPRINT 0.5 — INITIAL DATA SEEDING

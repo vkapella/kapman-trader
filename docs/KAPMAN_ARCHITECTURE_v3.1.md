@@ -650,7 +650,20 @@ python scripts/init/04_validate_data.py
 - Deletes (or compresses) data older than 730 trading days immediately after each run.  
 - Provides deterministic data for all downstream pipelines; no watchlist job is allowed to query S3.
 
-### 13.2 Sprint 2 — Detailed Breakdown (v3.2)
+### 13.2 Sprint Smoke Tests (Architectural Contracts)
+
+- **Definition:** Sprint smoke tests are mandatory, read-only, shell-invoked SQL checks that guard architectural invariants. They fail hard on drift and gate progression past the relevant sprint.
+- **Scope:** Architecture-only; they do not validate business logic or analytics outputs.
+- **Sprint 2.0.1 — Base OHLCV Foundation Invariants**
+  - `ohlcv_daily` table exists.
+  - `ohlcv_daily` is a Timescale hypertable.
+- **Sprint 2.0.2 — Base OHLCV Lifecycle Invariants**
+  - Retention policy exists on `ohlcv_daily` with `drop_after = 730 days`.
+  - Compression is enabled on `ohlcv_daily`.
+  - Compression policy exists on `ohlcv_daily` with `compress_after ≈ 365 days`.
+- **Execution:** Run `scripts/env/run_smoke_tests.sh` (uses SQL files in `scripts/db/`) before advancing past the protected sprint boundary. Tests are read-only and must exit non-zero on any invariant violation.
+
+### 13.3 Sprint 2 — Detailed Breakdown (v3.2)
 
 #### Sprint 2.1 — Metrics & Market Structure Foundations
 - Introduce Technical Indicators (RSI, MACD, ADX, OBV, ATR, etc.).  
