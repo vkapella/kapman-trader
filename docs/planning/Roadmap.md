@@ -21,7 +21,7 @@ This document is **not architectural authority** and may evolve independently.
 
 | FR ID | Requirement | Coverage Status | Notes |
 |------|-------------|----------------|------|
-| FR-001 | Daily OHLCV load (full universe) | ✅ Implemented | S3 loader + backfill utilities exist |
+| FR-001 | Daily OHLCV load (full universe) | ⚠️ Partial | initial hydrationloader + daily + backfill utilitie|
 | FR-002 | Options chains for watchlist | ❌ Missing | Schema exists; ingestion not implemented |
 | FR-003 | Technical indicators computed daily | ❌ Missing | MCP dropped; local TA computation required |
 | FR-004 | Dealer metrics stored | ⚠️ Partial | Schema/config only; no computation |
@@ -109,6 +109,7 @@ No schema changes are required to support this.
 This is the **minimum set of stories** required to close all FR gaps.
 
 ### Data & Metrics
+- **S-DS-01** — OHLCV backfill (universe) → *Closes FR-001*
 - **S-OPT-02** — Options ingestion (watchlist → `options_chains`) → *Closes FR-002*
 - **S-MET-01** — Dealer metric computation/persistence → *Closes FR-004*
 - **S-MET-02** — Volatility metric computation/persistence → *Closes FR-005*
@@ -141,6 +142,7 @@ This is the **minimum set of stories** required to close all FR gaps.
 Execution is organized by **blocking reality**, not subsystem purity.
 
 ### Slice A — Data Ingress & Core Analytics
+- S-DS-01
 - S-OPT-02
 - S-MET-01
 - S-MET-02
