@@ -1,4 +1,4 @@
-#!/Volumes/OWC Envoy Pro SX/App Development/kapman-trader/venv/bin/python
+#!/Volumes/OWC Envoy Pro SX/App Development/kapman-trader/venv/bin/python3
 
 import sys
 import json

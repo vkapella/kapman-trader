@@ -1,0 +1,21 @@
+# API & runtime
+fastapi==0.95.0
+uvicorn==0.21.1
+
+# Database (async)
+sqlalchemy==2.0.4
+asyncpg
+
+# Config & utilities
+pydantic==1.10.7
+python-dotenv==1.0.0
+httpx==0.23.3
+python-dateutil==2.8.2
+
+# Data access
+boto3==1.26.133
+
+# Pure computation (kept intentionally)
+pandas==2.0.0
+numpy==1.24.3
+ta==0.10.2

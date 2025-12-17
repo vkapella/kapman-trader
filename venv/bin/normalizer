@@ -1,5 +1,5 @@
 #!/bin/sh
-'''exec' "/Volumes/OWC Envoy Pro SX/App Development/kapman-trader/venv/bin/python" "$0" "$@"
+'''exec' "/Volumes/OWC Envoy Pro SX/App Development/kapman-trader/venv/bin/python3" "$0" "$@"
 ' '''
 # -*- coding: utf-8 -*-
 import re
