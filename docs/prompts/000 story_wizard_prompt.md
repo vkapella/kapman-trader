@@ -32,7 +32,7 @@ STEP 0 — REQUEST BASELINE FILES (REQUIRED)
 
 Before any planning begins, request the following files to be uploaded:
 
-1. KAPMAN_ARCHITECTURE.md  
+1. docs/architecture/KAPMAN_ARCHITECTURE.md  
 2. docs/planning/roadmap.md  
 
 Do NOT proceed until both files are provided.
@@ -94,6 +94,14 @@ PHASE 5 — Testing Strategy
 - Unit tests
 - Integration tests
 - Test data requirements
+
+Any test introduced by a story:
+- MUST live under the tests/ directory
+- MUST be discoverable by the default pytest invocation
+- MUST require no special flags, scripts, or custom runners
+- MUST be runnable in the future without re-reading the story
+If this bar cannot be met, the story MUST reduce test scope rather than introduce ad-hoc or non-discoverable tests.
+Tests that do not meet these criteria are considered non-existent.
 
 PHASE 6 — Operational Considerations  
 - Reruns and backfills

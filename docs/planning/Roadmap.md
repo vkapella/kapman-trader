@@ -93,7 +93,7 @@ Although the **schema is locked**, the system explicitly allows:
 These extended metrics:
 - Are **non-contractual**
 - Are **not required for MVP completion**
-- May be passed to Claude as **contextual input** for interpretation
+- May will passed to Claude as **contextual input** for interpretation
 
 This preserves:
 - MVP discipline
@@ -107,33 +107,37 @@ No schema changes are required to support this.
 ## 3. Canonical Gap Stories (MVP Completion Set)
 
 This is the **minimum set of stories** required to close all FR gaps.
+Every roadmap story MUST reference one or more GitHub issue IDs in its title or description.
 
 ### Data & Metrics
-- **S-DS-01** — OHLCV backfill (universe) → *Closes FR-001*
-- **S-OPT-02** — Options ingestion (watchlist → `options_chains`) → *Closes FR-002*
-- **S-MET-01** — Dealer metric computation/persistence → *Closes FR-004*
-- **S-MET-02** — Volatility metric computation/persistence → *Closes FR-005*
-- **S-MET-03** — Local TA + price metric computation (RSI/MACD/SMA/EMA + RVOL/VSI/HV) → *Closes FR-003, FR-006*
+- **S-INF-00** - Deterministic database rebuild and baseline validation → *Issue ID: A5*
+- **S-INF-01** - Wipe DB and establish MVP schema baseline → *Issue ID: A6*
+- **S-DS-01** — OHLCV backfill (universe) → *Closes FR-001* → *Issue ID: A0*
+- **S-OPT-02** — Options ingestion (watchlist → `options_chains`) → *Closes FR-002* → *Issue ID: A1*
+- **S-MET-01** — Dealer metric computation/persistence → *Closes FR-004* → *Issue ID: A3
+- **S-MET-02** — Volatility metric computation/persistence → *Closes FR-005* → *Issue ID: A4*
+- **S-MET-03** — Local TA + price metric computation (RSI/MACD/SMA/EMA + RVOL/VSI/HV) → *Closes FR-003, FR-006* → *Issue ID: A2*
 
 ### Wyckoff
-- **S-WYC-01** — Persist daily Wyckoff phase + confidence → *Closes FR-007*
-- **S-WYC-02** — Persist 8 Wyckoff events with benchmark assertion → *Closes FR-008*
+- **S-WYC-01** — Persist daily Wyckoff phase + confidence → *Closes FR-007* → *Issue ID: B1*
+- **S-WYC-02** — Persist 8 Wyckoff events with benchmark assertion → *Closes FR-008* → *Issue ID: B2*
 
 ### Recommendations
-- **S-REC-02** — Strike/expiration validator (real strikes only) → *Closes FR-010*
-- **S-REC-01** — Recommendation persistence (Claude output) → *Closes FR-009*
+- **S-AI-01** - Deterministic Claude interface & contract → *Closes FR-09* → *Issue ID: C3*
+- **S-REC-02** — Strike/expiration validator (real strikes only) → *Closes FR-010* → *Issue ID: C1*
+- **S-REC-01** — Recommendation persistence (Claude output) → *Closes FR-009* → *Issue ID: C2*
 
 ### Feedback Loop
-- **S-FB-01** — Outcome evaluation (+5/+10/+20 days)
-- **S-FB-02** — Weekly Brier score computation → *Closes FR-013*
+- **S-FB-01** — Outcome evaluation (+5/+10/+20 days) → *Closes FR-013* → *Issue ID: D1*
+- **S-FB-02** — Weekly statistical score computation → *Closes FR-013* → *Issue ID: D2*
 
 ### Product Surface
-- **S-PORT-01** — Portfolio CRUD API → *Closes FR-011*
-- **S-UI-01** — Minimal dashboard (recs + BC/Spring alerts) → *Closes FR-012, FR-014, FR-015*
+- **S-PORT-01** — Portfolio CRUD API → *Closes FR-011* → *Issue ID: E1*
+- **S-UI-01** — Minimal dashboard (recs + BC/Spring alerts) → *Closes FR-012, FR-014, FR-015* → *Issue ID: E2*
 
 ### Quality & Ops
-- **S-QA-01** — Coverage gate enforcement → *Closes FR-016*
-- **S-ENV-01** — dev/test/prod promotion workflow → *Closes FR-017*
+- **S-QA-01** — Coverage gate enforcement → *Closes FR-016* → *Issue ID: E3*
+- **S-ENV-01** — dev/test/prod promotion workflow → *Closes FR-017* → *Issue ID: E4*
 
 ---
 
@@ -142,6 +146,9 @@ This is the **minimum set of stories** required to close all FR gaps.
 Execution is organized by **blocking reality**, not subsystem purity.
 
 ### Slice A — Data Ingress & Core Analytics
+
+- S-INF-01
+- S-INF-00
 - S-DS-01
 - S-OPT-02
 - S-MET-01
