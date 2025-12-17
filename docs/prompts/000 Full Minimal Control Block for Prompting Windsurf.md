@@ -1,3 +1,4 @@
+Use this code when bulding a windsurf prompt to allow agents to execute without manual intervention
 EXECUTION AUTHORITY:
 
 You are authorized to directly modify files.
