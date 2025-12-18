@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock, ANY
 import datetime
+import os
 from core.pipeline.s3_universe_loader import S3UniverseLoader
 import pytest
 
@@ -16,6 +17,10 @@ class TestS3UniverseLoader(unittest.TestCase):
         
         mock_s3_client.return_value = self.mock_s3
         mock_db_connect.return_value = self.mock_db
+
+        os.environ.setdefault("S3_ENDPOINT_URL", "https://test-endpoint.invalid")
+        os.environ.setdefault("AWS_ACCESS_KEY_ID", "test-key")
+        os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test-secret")
         
         # Create a mock for the S3UniverseLoader class
         self.loader = S3UniverseLoader()
