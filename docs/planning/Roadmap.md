@@ -208,3 +208,9 @@ The MVP is complete when:
 At that point, KapMan is a **true decision-support system**, not a demo.
 
 ---
+## 6.Ownership Invariants
+
+- A6 owns schema truth.
+- A0 owns canonical ingestion logic.
+- No story other than A0 may modify ingestion behavior.
+- Later stories may invoke ingestion entrypoints only.
