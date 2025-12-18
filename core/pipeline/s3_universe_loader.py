@@ -20,16 +20,33 @@ class S3UniverseLoader:
     def __init__(self):
         """Initialize the S3UniverseLoader with AWS credentials and S3 configuration."""
         try:
-            # Initialize S3 client with the working configuration
+            endpoint_url = os.environ.get("S3_ENDPOINT_URL")
+            access_key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+            secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+            bucket = os.environ.get("S3_BUCKET", "flatfiles")
+            prefix = os.environ.get("POLYGON_S3_OHLCV_PREFIX", "us_stocks_sip/day_aggs_v1")
+
+            missing = [
+                name
+                for name, val in [
+                    ("S3_ENDPOINT_URL", endpoint_url),
+                    ("AWS_ACCESS_KEY_ID", access_key_id),
+                    ("AWS_SECRET_ACCESS_KEY", secret_access_key),
+                ]
+                if not val
+            ]
+            if missing:
+                raise RuntimeError(f"Missing required S3 env vars: {', '.join(missing)}")
+
             self.s3 = boto3.client(
-                's3',
-                aws_access_key_id='e25caf9b-a4ec-4e41-98f0-73e13ed1564b',
-                aws_secret_access_key='T1wfHMlp8DxyKJ0i8WqwfifydIPLyq4p',
-                endpoint_url='https://files.massive.com',
-                config=Config(signature_version='s3v4')
+                "s3",
+                aws_access_key_id=access_key_id,
+                aws_secret_access_key=secret_access_key,
+                endpoint_url=endpoint_url,
+                config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
             )
-            self.bucket_name = 'flatfiles'
-            self.prefix = 'us_stocks_sip/day_aggs_v1'
+            self.bucket_name = bucket
+            self.prefix = prefix
             logger.info("S3UniverseLoader initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize S3UniverseLoader: {e}")
