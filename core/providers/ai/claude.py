@@ -1,7 +1,30 @@
+import json
 import os
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
 import anthropic
-from .base import AIProvider, AnalysisContext, Recommendation, ModelInfo
+
+from .base import AIProvider, AnalysisContext, ModelInfo, Recommendation
+
+
+def _model_dump_json(model: Any, *, indent: int = 2) -> str:
+    if hasattr(model, "model_dump_json"):
+        return model.model_dump_json(indent=indent)
+    return model.json(indent=indent)
+
+
+def _recommendation_from_dict(data: Dict[str, Any]) -> Recommendation:
+    if hasattr(Recommendation, "model_validate"):
+        return Recommendation.model_validate(data)
+    return Recommendation.parse_obj(data)
+
+
+def _content_text(content_block: Any) -> str:
+    if hasattr(content_block, "text"):
+        return str(content_block.text)
+    if isinstance(content_block, dict) and "text" in content_block:
+        return str(content_block["text"])
+    return str(content_block)
 
 
 class ClaudeProvider(AIProvider):
@@ -10,15 +33,19 @@ class ClaudeProvider(AIProvider):
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-        
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        self._client: Any | None = None
         self.model = "claude-sonnet-4-20250514"  # Updated to the latest Sonnet 4 model
+
+    @property
+    def client(self) -> Any:
+        if self._client is None:
+            self._client = anthropic.Anthropic(api_key=self.api_key)
+        return self._client
 
     async def generate_recommendation(self, context: AnalysisContext) -> Recommendation:
         """Generate a trading recommendation using Claude."""
         try:
-            # Convert context to a string representation using Pydantic v2 method
-            context_str = context.model_dump_json(indent=2)
+            context_str = _model_dump_json(context, indent=2)
             
             # Create the prompt
             prompt = f"""You are an expert options trader. Analyze the following market context and provide a trading recommendation.
@@ -51,11 +78,9 @@ Provide your recommendation in the following JSON format:
             )
             
             # Parse the response
-            content = response.content[0].text
-            import json
+            content = _content_text(response.content[0])
             data = json.loads(content)
-            
-            return Recommendation.model_validate(data)
+            return _recommendation_from_dict(data)
             
         except Exception as e:
             raise Exception(f"Failed to generate recommendation: {str(e)}")
@@ -66,10 +91,10 @@ Provide your recommendation in the following JSON format:
             prompt = f"""Provide a detailed justification for the following trading recommendation.
 
 Recommendation:
-{recommendation.model_dump_json(indent=2)}
+{_model_dump_json(recommendation, indent=2)}
 
 Context:
-{context.model_dump_json(indent=2)}
+{_model_dump_json(context, indent=2)}
 
 Provide a detailed explanation of why this trade makes sense given the current market conditions,
 technical indicators, and any relevant patterns or signals. Include potential risks and your
@@ -82,7 +107,7 @@ confidence level in this recommendation."""
                 messages=[{"role": "user", "content": prompt}]
             )
             
-            return response.content[0].text
+            return _content_text(response.content[0])
             
         except Exception as e:
             return f"Could not generate justification: {str(e)}"
