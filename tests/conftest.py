@@ -13,49 +13,10 @@ import pytest
 _SCHEMA_BOOTSTRAPPED = False
 
 
-def _ensure_ohlcv_daily_compat(db_url: str) -> None:
-    import psycopg2
-
-    with psycopg2.connect(db_url) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT to_regclass(%s)", ("public.ohlcv_daily",))
-            has_ohlcv_daily = cur.fetchone()[0] is not None
-            if has_ohlcv_daily:
-                return
-
-            cur.execute("SELECT to_regclass(%s)", ("public.ohlcv",))
-            has_ohlcv = cur.fetchone()[0] is not None
-            if not has_ohlcv:
-                return
-
-            cur.execute(
-                """
-                CREATE OR REPLACE VIEW ohlcv_daily AS
-                SELECT ticker_id, date, open, high, low, close, volume, created_at
-                FROM ohlcv
-                """
-            )
-        conn.commit()
-
-
-# Ensure any test-side calls to reset_and_migrate also create `ohlcv_daily`
-import core.db.a6_migrations as _a6_migrations
-
-_ORIGINAL_RESET_AND_MIGRATE = _a6_migrations.reset_and_migrate
-
-
-def _reset_and_migrate_with_test_compat(db_url: str, migrations_dir) -> None:
-    _ORIGINAL_RESET_AND_MIGRATE(db_url, migrations_dir)
-    _ensure_ohlcv_daily_compat(db_url)
-
-
-_a6_migrations.reset_and_migrate = _reset_and_migrate_with_test_compat
-
-
 def _verify_required_relations(db_url: str) -> None:
     import psycopg2
 
-    required = ("tickers", "ohlcv_daily")
+    required = ("tickers", "ohlcv")
     with psycopg2.connect(db_url) as conn:
         with conn.cursor() as cur:
             for name in required:

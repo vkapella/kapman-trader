@@ -86,6 +86,24 @@ def test_ohlcv_is_hypertable(test_db_url: str) -> None:
             assert cur.fetchone() is not None
 
 
+def test_ohlcv_has_retention_policy_730_days(test_db_url: str) -> None:
+    with psycopg2.connect(test_db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT config
+                FROM timescaledb_information.jobs
+                WHERE proc_name = 'policy_retention'
+                  AND hypertable_schema = 'public'
+                  AND hypertable_name = 'ohlcv'
+                """,
+            )
+            row = cur.fetchone()
+            assert row is not None, "Expected TimescaleDB retention policy job for public.ohlcv"
+            config = row[0] or {}
+            assert config.get("drop_after") == "730 days"
+
+
 def test_no_extra_tables(test_db_url: str) -> None:
     with psycopg2.connect(test_db_url) as conn:
         assert _public_tables(conn) == {

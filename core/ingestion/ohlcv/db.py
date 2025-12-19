@@ -45,14 +45,14 @@ def count_table(conn, table: str) -> int:
 
 def count_ohlcv_for_date(conn, d: date) -> int:
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM ohlcv_daily WHERE date = %s", (d,))
+        cur.execute("SELECT COUNT(*) FROM ohlcv WHERE date = %s", (d,))
         return int(cur.fetchone()[0])
 
 
 def count_ohlcv_in_range(conn, start: date, end: date) -> int:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT COUNT(*) FROM ohlcv_daily WHERE date >= %s AND date <= %s",
+            "SELECT COUNT(*) FROM ohlcv WHERE date >= %s AND date <= %s",
             (start, end),
         )
         return int(cur.fetchone()[0])
@@ -68,7 +68,7 @@ def upsert_ohlcv_rows(conn, rows: list[OhlcvRow], *, batch_size: int = 5000) -> 
         return UpsertResult(inserted_or_updated=0)
 
     insert_sql = """
-        INSERT INTO ohlcv_daily (ticker_id, date, open, high, low, close, volume)
+        INSERT INTO ohlcv (ticker_id, date, open, high, low, close, volume)
         VALUES %s
         ON CONFLICT (ticker_id, date) DO UPDATE
         SET open = EXCLUDED.open,
@@ -76,7 +76,7 @@ def upsert_ohlcv_rows(conn, rows: list[OhlcvRow], *, batch_size: int = 5000) -> 
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             volume = EXCLUDED.volume
-        WHERE (ohlcv_daily.open, ohlcv_daily.high, ohlcv_daily.low, ohlcv_daily.close, ohlcv_daily.volume)
+        WHERE (ohlcv.open, ohlcv.high, ohlcv.low, ohlcv.close, ohlcv.volume)
               IS DISTINCT FROM
               (EXCLUDED.open, EXCLUDED.high, EXCLUDED.low, EXCLUDED.close, EXCLUDED.volume)
     """

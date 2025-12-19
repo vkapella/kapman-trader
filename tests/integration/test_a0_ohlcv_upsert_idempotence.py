@@ -47,11 +47,11 @@ def test_a0_upsert_is_idempotent() -> None:
         upsert_ohlcv_rows(conn, rows)
 
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM ohlcv_daily")
+            cur.execute("SELECT COUNT(*) FROM ohlcv")
             assert int(cur.fetchone()[0]) == 1
 
             cur.execute(
-                "SELECT open, high, low, close, volume FROM ohlcv_daily WHERE ticker_id = %s AND date = %s",
+                "SELECT open, high, low, close, volume FROM ohlcv WHERE ticker_id = %s AND date = %s",
                 (ticker_id, date(2025, 12, 5)),
             )
             open_, high_, low_, close_, volume = cur.fetchone()

@@ -33,7 +33,7 @@ def build_parser() -> ArgumentParser:
     p = ArgumentParser(
         description=(
             "Canonical OHLCV ingestion pipeline (A0). "
-            "Reads Polygon S3 flat files and upserts into public.ohlcv_daily."
+            "Reads Polygon S3 flat files and upserts into public.ohlcv."
         )
     )
     p.add_argument("--db-url", default=None, help="Overrides DATABASE_URL (default: env DATABASE_URL)")

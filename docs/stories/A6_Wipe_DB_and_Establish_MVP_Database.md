@@ -56,6 +56,7 @@ Establish the authoritative MVP database schema by performing a one-time destruc
 * Zero data after migration.
 * Schema fidelity to architecture.
 * Deterministic, re-runnable migrations.
+* `ohlcv` has a TimescaleDB retention policy with `drop_after = 730 days`.
 * Downstream compatibility (A0 can target without modification).
 
 ---
@@ -83,7 +84,7 @@ Establish the authoritative MVP database schema by performing a one-time destruc
 ### Forbidden
 
 * Inserts of any data
-* Triggers, jobs, retention/compression policies
+* Triggers and compression policies (compression is intentionally excluded from MVP baseline)
 * Invoking ingestion or services
 
 ---
@@ -123,6 +124,7 @@ Location (non-negotiable): `tests/integration/`
 * `test_tables_exist`
 * `test_tables_are_empty`
 * `test_ohlcv_is_hypertable`
+* `test_ohlcv_has_retention_policy_730_days`
 * `test_no_extra_tables`
 
 ### Rules
@@ -160,6 +162,7 @@ Location (non-negotiable): `tests/integration/`
 * Database is empty after migration.
 * Migrations are deterministic and re-runnable.
 * `ohlcv` is a TimescaleDB hypertable.
+* `ohlcv` has an active TimescaleDB retention policy with `drop_after = 730 days`.
 * Tests run via default `pytest` with no special invocation.
 * A0 ingestion can target the schema without modification.
 
