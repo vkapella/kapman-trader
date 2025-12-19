@@ -133,7 +133,7 @@ def ingest_ohlcv(
         if tickers_count == 0:
             raise IngestionError("tickers table is empty; load ticker universe before OHLCV")
 
-        pre_ohlcv_count = db_mod.count_table(conn, "ohlcv_daily")
+        pre_ohlcv_count = db_mod.count_table(conn, "ohlcv")
         symbol_map = db_mod.load_symbol_map(conn)
         if not symbol_map:
             raise IngestionError("No tickers available to map symbols; tickers table is empty")
@@ -198,22 +198,22 @@ def ingest_ohlcv(
 
             # Per-day existence validation (coarse, but fail-fast).
             if db_mod.count_ohlcv_for_date(conn, d) == 0:
-                raise IngestionError(f"{d.isoformat()}: ohlcv_daily has 0 rows after ingestion")
+                raise IngestionError(f"{d.isoformat()}: ohlcv has 0 rows after ingestion")
 
         if ingested_dates != dates:
             raise IngestionError(
                 "Internal error: ingested date list does not match resolved date list"
             )
 
-        post_ohlcv_count = db_mod.count_table(conn, "ohlcv_daily")
+        post_ohlcv_count = db_mod.count_table(conn, "ohlcv")
         if pre_ohlcv_count == 0 and post_ohlcv_count == 0:
-            raise IngestionError("ohlcv_daily remained empty after ingestion")
+            raise IngestionError("ohlcv remained empty after ingestion")
 
         # Date coverage validation: ensure DB has rows within requested bounds.
         if ingested_dates:
             range_count = db_mod.count_ohlcv_in_range(conn, min(ingested_dates), max(ingested_dates))
             if range_count == 0:
-                raise IngestionError("ohlcv_daily has 0 rows in ingested date range after ingestion")
+                raise IngestionError("ohlcv has 0 rows in ingested date range after ingestion")
 
     return IngestionReport(
         requested=IngestionRequest(mode=mode, start=start, end=end, dates=dates),

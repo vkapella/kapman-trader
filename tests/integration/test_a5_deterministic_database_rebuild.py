@@ -203,6 +203,7 @@ def test_a5_deterministic_rebuild_and_baseline_invariants(test_db_url: str) -> N
         "0001_extensions.sql",
         "0002_types.sql",
         "0003_mvp_schema.sql",
+        "0004_ohlcv_retention.sql",
     ]
 
     fingerprints: list[dict[str, Any]] = []

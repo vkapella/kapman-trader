@@ -64,7 +64,7 @@ def test_a0_bootstrap_then_ohlcv_ingest_is_idempotent() -> None:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM tickers")
             tickers_count = int(cur.fetchone()[0])
-            cur.execute("SELECT COUNT(*) FROM ohlcv_daily")
+            cur.execute("SELECT COUNT(*) FROM ohlcv")
             ohlcv_count = int(cur.fetchone()[0])
 
     assert tickers_count == 2
