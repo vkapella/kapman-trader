@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -34,7 +35,13 @@ class IngestionReport:
     requested: IngestionRequest
     ingested_dates: list[date]
     total_rows_written: int
-    missing_symbols: set[str]
+    missing_symbols_count: int
+    missing_symbols_examples: list[str]
+    duplicate_rows_seen: int
+    duplicate_rows_resolved: int
+
+
+logger = logging.getLogger(__name__)
 
 
 def compute_base_range(*, days: int, end: date | None = None) -> tuple[date, date]:
@@ -104,6 +111,8 @@ def ingest_ohlcv(
     mode: str,
     dates: list[date],
     symbols: set[str] | None = None,
+    strict_missing_symbols: bool = True,
+    max_missing_symbol_examples: int = 25,
 ) -> IngestionReport:
     if not dates:
         raise IngestionError("No dates resolved for ingestion")
@@ -135,8 +144,11 @@ def ingest_ohlcv(
                 raise IngestionError("No requested symbols exist in tickers table")
 
         total_rows_written = 0
-        all_missing_symbols: set[str] = set()
         ingested_dates: list[date] = []
+        missing_symbols_examples: list[str] = []
+        missing_symbols_total = 0
+        duplicate_rows_seen = 0
+        duplicate_rows_resolved = 0
 
         for d in dates:
             key = build_day_aggs_key(s3_cfg.prefix, d)
@@ -158,13 +170,27 @@ def ingest_ohlcv(
                     f"(examples: {parsed.invalid_examples})"
                 )
             if parsed.missing_symbols:
-                all_missing_symbols.update(parsed.missing_symbols)
-                raise IngestionError(
-                    f"{d.isoformat()}: {len(parsed.missing_symbols)} symbols present in S3 "
-                    f"but missing from tickers table (examples: {sorted(list(parsed.missing_symbols))[:25]})"
+                missing_symbols_total += len(parsed.missing_symbols)
+                sample = sorted(parsed.missing_symbols)[: max_missing_symbol_examples]
+                if len(missing_symbols_examples) < max_missing_symbol_examples:
+                    remaining = max_missing_symbol_examples - len(missing_symbols_examples)
+                    missing_symbols_examples.extend(sample[:remaining])
+                if strict_missing_symbols:
+                    raise IngestionError(
+                        f"{d.isoformat()}: {len(parsed.missing_symbols)} symbols present in S3 "
+                        f"but missing from tickers table (examples: {sample})"
+                    )
+                logger.warning(
+                    "%s: skipping %d symbols missing from tickers (sample=%s)",
+                    d.isoformat(),
+                    len(parsed.missing_symbols),
+                    sample,
                 )
             if not parsed.rows:
                 raise IngestionError(f"{d.isoformat()}: S3 file parsed to 0 valid OHLCV rows")
+
+            duplicate_rows_seen += parsed.duplicate_rows
+            duplicate_rows_resolved += parsed.duplicate_rows_resolved
 
             db_mod.upsert_ohlcv_rows(conn, parsed.rows)
             total_rows_written += len(parsed.rows)
@@ -193,7 +219,10 @@ def ingest_ohlcv(
         requested=IngestionRequest(mode=mode, start=start, end=end, dates=dates),
         ingested_dates=ingested_dates,
         total_rows_written=total_rows_written,
-        missing_symbols=all_missing_symbols,
+        missing_symbols_count=missing_symbols_total,
+        missing_symbols_examples=missing_symbols_examples,
+        duplicate_rows_seen=duplicate_rows_seen,
+        duplicate_rows_resolved=duplicate_rows_resolved,
     )
 
 

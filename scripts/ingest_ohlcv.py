@@ -48,6 +48,11 @@ def build_parser() -> ArgumentParser:
             help="Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)",
         )
         sp.add_argument(
+            "--strict-missing-symbols",
+            action="store_true",
+            help="Fail if flatfile contains symbols missing from tickers (default: base load skips missing symbols)",
+        )
+        sp.add_argument(
             "--no-ticker-bootstrap",
             action="store_true",
             help="Disable automatic ticker bootstrapping; if tickers is empty, fail as-is",
@@ -169,13 +174,22 @@ def main(argv: list[str]) -> int:
         mode=args.mode,
         dates=dates,
         symbols=requested_symbols,
+        strict_missing_symbols=bool(args.strict_missing_symbols or args.mode != "base"),
     )
 
     print(
         f"✅ OHLCV ingestion complete: mode={report.requested.mode} "
         f"dates={report.requested.start.isoformat()}..{report.requested.end.isoformat()} "
-        f"({len(report.ingested_dates)} files), rows_written={report.total_rows_written}"
+        f"({len(report.ingested_dates)} files), rows_written={report.total_rows_written} "
+        f"missing_symbols={report.missing_symbols_count} "
+        f"duplicates_seen={report.duplicate_rows_seen} "
+        f"duplicates_resolved={report.duplicate_rows_resolved}"
     )
+    if report.missing_symbols_count:
+        print(
+            f"⚠️ Missing symbol sample (skipped): {sorted(report.missing_symbols_examples)}",
+            file=sys.stderr,
+        )
     return 0
 
 

@@ -27,6 +27,7 @@ class ParsedDay:
     invalid_rows: int
     invalid_examples: list[str]
     duplicate_rows: int
+    duplicate_rows_resolved: int
 
 
 def _get_decimal(record: dict, keys: list[str]) -> Decimal | None:
@@ -53,6 +54,18 @@ def _get_int(record: dict, keys: list[str]) -> int | None:
     return None
 
 
+def _get_timestamp(record: dict, keys: list[str]) -> int | None:
+    for key in keys:
+        value = record.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def parse_day_aggs_gz_csv(
     gz_bytes: bytes,
     *,
@@ -66,8 +79,9 @@ def parse_day_aggs_gz_csv(
     invalid_rows = 0
     invalid_examples: list[str] = []
     duplicate_rows = 0
+    duplicate_rows_resolved = 0
 
-    by_ticker_id: dict[str, OhlcvRow] = {}
+    by_ticker_id: dict[str, tuple[OhlcvRow, int | None]] = {}
 
     with open_gzip_bytes(gz_bytes) as text_stream:
         reader = csv.DictReader(text_stream)
@@ -99,6 +113,10 @@ def parse_day_aggs_gz_csv(
                     invalid_examples.append(f"{symbol}: missing/invalid OHLCV fields")
                 continue
 
+            ts = _get_timestamp(
+                record,
+                ["timestamp", "t", "sip_timestamp", "participant_timestamp", "ts"],
+            )
             row = OhlcvRow(
                 ticker_id=ticker_id,
                 date=current_date,
@@ -111,16 +129,27 @@ def parse_day_aggs_gz_csv(
 
             existing = by_ticker_id.get(ticker_id)
             if existing is not None:
-                if existing != row:
-                    raise RuntimeError(
-                        f"Inconsistent duplicate rows for {symbol} on {current_date.isoformat()}"
-                    )
                 duplicate_rows += 1
+                _, existing_ts = existing
+
+                replace = False
+                if existing_ts is None and ts is not None:
+                    replace = True
+                elif existing_ts is not None and ts is None:
+                    replace = False
+                elif existing_ts is not None and ts is not None:
+                    replace = ts >= existing_ts
+                else:  # both None
+                    replace = True
+
+                if replace:
+                    by_ticker_id[ticker_id] = (row, ts)
+                    duplicate_rows_resolved += 1
                 continue
 
-            by_ticker_id[ticker_id] = row
+            by_ticker_id[ticker_id] = (row, ts)
 
-    rows = sorted(by_ticker_id.values(), key=lambda r: r.ticker_id)
+    rows = sorted((row for (row, _) in by_ticker_id.values()), key=lambda r: r.ticker_id)
     return ParsedDay(
         date=current_date,
         rows=rows,
@@ -128,4 +157,5 @@ def parse_day_aggs_gz_csv(
         invalid_rows=invalid_rows,
         invalid_examples=invalid_examples,
         duplicate_rows=duplicate_rows,
+        duplicate_rows_resolved=duplicate_rows_resolved,
     )
