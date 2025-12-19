@@ -68,7 +68,7 @@ Step 3 — Load Canonical Ticker Universe (A0 – Tickers Only)
 
 This establishes the symbol → ticker_id mapping required for historical OHLCV.
 
-python -m scripts.ingest_tickers –force
+python -m scripts.ingest_tickers --force
 
 Expected outcome:
 	•	tickers populated
@@ -100,6 +100,27 @@ Expected outcome:
 
 Step 5 — Optional Validation
 
+#get to the docker sql prompt
+docker compose exec db psql -U kapman -d kapman
+
+List tables
+\dt
+#confirm the rogue ohlcv_daily does not exist
+\dt ohlcv_daily
+SELECT table_name
+FROM information_schema.tables
+WHERE table_name LIKE '%ohlcv%';
+
+                 List of relations
+ Schema |          Name           | Type  | Owner  
+--------+-------------------------+-------+--------
+ public | daily_snapshots         | table | kapman
+ public | ohlcv                   | table | kapman
+ public | options_chains          | table | kapman
+ public | recommendation_outcomes | table | kapman
+ public | recommendations         | table | kapman
+ public | tickers                 | table | kapman
+(6 rows)
 Confirm invariants manually if needed:
 	•	SELECT COUNT(*) FROM ohlcv;
 	•	SELECT MIN(date), MAX(date) FROM ohlcv;
