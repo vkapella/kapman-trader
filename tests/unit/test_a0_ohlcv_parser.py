@@ -81,20 +81,41 @@ def test_parse_day_aggs_dedupes_identical_rows() -> None:
         symbol_to_ticker_id={"AAPL": "t1"},
     )
     assert parsed.duplicate_rows == 1
+    assert parsed.duplicate_rows_resolved == 1
     assert len(parsed.rows) == 1
 
 
 @pytest.mark.unit
-def test_parse_day_aggs_raises_on_inconsistent_duplicates() -> None:
+def test_parse_day_aggs_inconsistent_duplicates_latest_timestamp_wins() -> None:
     gz = _gz_bytes(
-        "ticker,volume,open,close,high,low\n"
-        "AAPL,100,150.0,152.0,153.0,149.5\n"
-        "AAPL,100,150.0,999.0,153.0,149.5\n"
+        "ticker,volume,open,close,high,low,timestamp\n"
+        "AAPL,100,150.0,152.0,153.0,149.5,100\n"
+        "AAPL,100,150.0,999.0,153.0,149.5,200\n"
     )
-    with pytest.raises(RuntimeError, match="Inconsistent duplicate rows"):
-        parse_day_aggs_gz_csv(
-            gz,
-            current_date=date(2025, 12, 5),
-            symbol_to_ticker_id={"AAPL": "t1"},
-        )
+    parsed = parse_day_aggs_gz_csv(
+        gz,
+        current_date=date(2025, 12, 5),
+        symbol_to_ticker_id={"AAPL": "t1"},
+    )
+    assert parsed.duplicate_rows == 1
+    assert parsed.duplicate_rows_resolved == 1
+    assert len(parsed.rows) == 1
+    assert parsed.rows[0].close == Decimal("999.0")
 
+
+@pytest.mark.unit
+def test_parse_day_aggs_duplicate_timestamp_tie_last_row_wins() -> None:
+    gz = _gz_bytes(
+        "ticker,volume,open,close,high,low,timestamp\n"
+        "AAPL,100,150.0,152.0,153.0,149.5,100\n"
+        "AAPL,100,150.0,999.0,153.0,149.5,100\n"
+    )
+    parsed = parse_day_aggs_gz_csv(
+        gz,
+        current_date=date(2025, 12, 5),
+        symbol_to_ticker_id={"AAPL": "t1"},
+    )
+    assert parsed.duplicate_rows == 1
+    assert parsed.duplicate_rows_resolved == 1
+    assert len(parsed.rows) == 1
+    assert parsed.rows[0].close == Decimal("999.0")

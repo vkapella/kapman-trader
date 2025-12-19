@@ -41,6 +41,7 @@ def test_a0_bootstrap_then_ohlcv_ingest_is_idempotent() -> None:
         "ticker,volume,open,close,high,low\n"
         "AAPL,100,150.0,152.0,153.0,149.5\n"
         "MSFT,200,300.0,301.0,305.0,299.0\n"
+        "BCPC,123,10.0,11.0,12.0,9.0\n"
     )
     gz = _gz_bytes(csv_text)
 
