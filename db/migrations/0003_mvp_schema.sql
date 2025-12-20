@@ -23,27 +23,6 @@ CREATE TABLE ohlcv (
 
 SELECT create_hypertable('ohlcv', 'date', if_not_exists => TRUE);
 
-CREATE TABLE options_chains (
-    time TIMESTAMPTZ NOT NULL,
-    ticker_id UUID NOT NULL
-        REFERENCES tickers(id)
-        ON DELETE CASCADE,
-    expiration_date DATE NOT NULL,
-    strike_price NUMERIC(12, 4) NOT NULL,
-    option_type option_type NOT NULL,
-    bid NUMERIC(12, 4),
-    ask NUMERIC(12, 4),
-    last NUMERIC(12, 4),
-    volume INTEGER,
-    open_interest INTEGER,
-    implied_volatility NUMERIC(10, 6),
-    delta NUMERIC(10, 6),
-    gamma NUMERIC(10, 6),
-    theta NUMERIC(10, 6),
-    vega NUMERIC(10, 6),
-    created_at TIMESTAMPTZ,
-    PRIMARY KEY (time, ticker_id, expiration_date, strike_price, option_type)
-);
 
 CREATE TABLE daily_snapshots (
     time TIMESTAMPTZ NOT NULL,
