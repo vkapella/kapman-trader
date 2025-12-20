@@ -206,6 +206,7 @@ def test_a5_deterministic_rebuild_and_baseline_invariants(test_db_url: str) -> N
         "0003_mvp_schema.sql",
         "0004_ohlcv_retention.sql",
         "0005_watchlists.sql",
+        "0006_options_chains_timescaledb.sql",
     ]
 
     fingerprints: list[dict[str, Any]] = []
@@ -228,6 +229,12 @@ def test_a5_deterministic_rebuild_and_baseline_invariants(test_db_url: str) -> N
                 ht["schema"] == "public"
                 and ht["name"] == "ohlcv"
                 and ht["time_column"] == "date"
+                for ht in hypertables
+            )
+            assert any(
+                ht["schema"] == "public"
+                and ht["name"] == "options_chains"
+                and ht["time_column"] == "time"
                 for ht in hypertables
             )
 
