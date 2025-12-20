@@ -52,6 +52,7 @@ def test_tables_exist(test_db_url: str) -> None:
     with psycopg2.connect(test_db_url) as conn:
         assert _public_tables(conn) == {
             "tickers",
+            "watchlists",
             "ohlcv",
             "options_chains",
             "daily_snapshots",
@@ -66,6 +67,7 @@ def test_tables_are_empty(test_db_url: str) -> None:
             conn,
             [
                 "tickers",
+                "watchlists",
                 "ohlcv",
                 "options_chains",
                 "daily_snapshots",
@@ -108,6 +110,7 @@ def test_no_extra_tables(test_db_url: str) -> None:
     with psycopg2.connect(test_db_url) as conn:
         assert _public_tables(conn) == {
             "tickers",
+            "watchlists",
             "ohlcv",
             "options_chains",
             "daily_snapshots",

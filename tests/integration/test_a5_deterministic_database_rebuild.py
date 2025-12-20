@@ -14,6 +14,7 @@ from core.db.a6_migrations import default_migrations_dir, list_sql_migrations, r
 
 EXPECTED_PUBLIC_TABLES: set[str] = {
     "tickers",
+    "watchlists",
     "ohlcv",
     "options_chains",
     "daily_snapshots",
@@ -33,16 +34,16 @@ EXPECTED_ENUM_TYPES: set[str] = {
 EXPECTED_EXTENSIONS: set[str] = {"uuid-ossp", "timescaledb"}
 
 
-def _test_db_url() -> str:
-    url = os.getenv("KAPMAN_TEST_DATABASE_URL")
-    if not url:
-        raise RuntimeError("KAPMAN_TEST_DATABASE_URL is not set")
-    return url
+def _test_db_url() -> str | None:
+    return os.getenv("KAPMAN_TEST_DATABASE_URL")
 
 
 @pytest.fixture(scope="session")
 def test_db_url() -> str:
-    return _test_db_url()
+    url = _test_db_url()
+    if not url:
+        pytest.skip("KAPMAN_TEST_DATABASE_URL is not set")
+    return url
 
 
 def _public_tables(conn) -> set[str]:
@@ -204,6 +205,7 @@ def test_a5_deterministic_rebuild_and_baseline_invariants(test_db_url: str) -> N
         "0002_types.sql",
         "0003_mvp_schema.sql",
         "0004_ohlcv_retention.sql",
+        "0005_watchlists.sql",
     ]
 
     fingerprints: list[dict[str, Any]] = []
