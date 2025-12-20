@@ -17,6 +17,7 @@ Canonical Invariants (Architecture-Aligned)
 	•	Base layer is the only ingress from S3
 	•	Analytical layer never touches S3
 	•	Retention is enforced deterministically (730 trading days)
+	•	Watchlists are the authoritative symbol scope for all non-OHLCV ingestion	
 
 ⸻
 
@@ -44,7 +45,9 @@ This starts Postgres with zero user tables.
 
 docker compose up -d db
 
-Wait until healthcheck passes (docker compose ps shows db healthy).
+Wait until healthcheck passes and shows db health
+
+docker compose ps 
 
 ⸻
 
@@ -64,11 +67,58 @@ If ohlcv does not exist after this step, the rebuild is invalid.
 
 ⸻
 
+Step 2.5 — Persist MVP Watchlists (A7 – Data Seeding Only)
+
+This seeds the authoritative symbol scopes used by downstream ingestion and analytics.
+
+python -m scripts.ingest_watchlists
+
+docker exec -it kapman-db psql -U kapman -d kapman -c "
+SELECT watchlist_id,
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE active) AS active
+FROM public.watchlists
+GROUP BY watchlist_id
+ORDER BY watchlist_id;
+"
+
+
+Preconditions:
+	•	data/watchlists/ directory exists
+	•	All watchlist files are .txt
+	•	One ticker per line
+	•	Filenames define watchlist_id
+
+Behavior:
+	•	Creates watchlists deterministically from files
+	•	Adds missing symbols
+	•	Soft-deactivates removed symbols
+	•	Idempotent across re-runs
+	•	Uses advisory locks to prevent concurrent execution
+
+Expected outcome:
+	•	public.watchlists table populated
+	•	One row per (watchlist_id, symbol)
+	•	active = true for symbols present in files
+
+This step must complete successfully before:
+	•	Options ingestion
+	•	Metrics computation
+	•	Snapshot generation
+
+If watchlists are empty or missing, the rebuild is invalid.
+
+
+
 Step 3 — Load Canonical Ticker Universe (A0 – Tickers Only)
 
 This establishes the symbol → ticker_id mapping required for historical OHLCV.
 
 python -m scripts.ingest_tickers --force
+
+docker exec -it kapman-db psql -U kapman -d kapman -c "
+SELECT COUNT(*) FROM public.tickers;
+"
 
 Expected outcome:
 	•	tickers populated
@@ -83,6 +133,11 @@ Step 4 — Base OHLCV Hydration from S3 (A0 – Data Only)
 This performs full deterministic backfill into ohlcv.
 
 python -m scripts.ingest_ohlcv base
+
+docker exec -it kapman-db psql -U kapman -d kapman -c "
+SELECT COUNT(*) FROM ohlcv;
+SELECT MIN(date), MAX(date) FROM ohlcv;
+"
 
 Behavior:
 	•	Reads S3 flatfiles (Base Layer ingress)
@@ -134,6 +189,14 @@ Explicitly Forbidden Actions
 	•	Loading OHLCV before tickers
 	•	Allowing analytical jobs to read from S3
 	•	Partial resets (schema without volume removal)
+
+Confirm watchlists exist and are populated:
+	•	SELECT watchlist_id, COUNT(*) FROM watchlists GROUP BY watchlist_id;
+	•	SELECT COUNT(*) FROM watchlists WHERE active = true;
+
+Expected:
+	•	≥ 1 watchlist
+	•	Active symbols > 0
 
 ⸻
 

@@ -113,6 +113,7 @@ Every roadmap story MUST reference one or more GitHub issue IDs in its title or 
 - **S-INF-00** - Deterministic database rebuild and baseline validation → *Issue ID: A5*
 - **S-INF-01** - Wipe DB and establish MVP schema baseline → *Issue ID: A6*
 - **S-DS-01** — OHLCV backfill (universe) → *Closes FR-001* → *Issue ID: A0*
+- **S-WL-01** — Persist MVP Watchlist → *Issue ID: A7*
 - **S-OPT-02** — Options ingestion (watchlist → `options_chains`) → *Closes FR-002* → *Issue ID: A1*
 - **S-MET-01** — Dealer metric computation/persistence → *Closes FR-004* → *Issue ID: A3
 - **S-MET-02** — Volatility metric computation/persistence → *Closes FR-005* → *Issue ID: A4*
@@ -145,18 +146,20 @@ Every roadmap story MUST reference one or more GitHub issue IDs in its title or 
 
 Execution is organized by **blocking reality**, not subsystem purity.
 
-### Slice A — Data Ingress & Core Analytics
+#### Slice A — Data Ingress & Core Analytics
+
+Execution is organized by blocking reality, not subsystem purity.
 
 - S-INF-01
 - S-INF-00
 - S-DS-01
+- **S-WL-01**  ← NEW
 - S-OPT-02
 - S-MET-01
 - S-MET-02
 - S-MET-03
 
-**Outcome:** `daily_snapshots` fully populated with real metrics.
-
+Outcome: `daily_snapshots` fully populated with real metrics.
 ---
 
 ### Slice B — Wyckoff in Production

@@ -9,9 +9,9 @@
 
 This project is governed by three primary documents, each with a distinct and non-overlapping role:
 
-- **KAPMAN_ARCHITECTURE_v3.1.md** defines *what* the system is, *why* it exists, and the architectural, data, environment, sprint, and determinism constraints that all code must obey.
-- **WINDSURF_GUIDE_v3.1.md** defines *how* code is written, tested, and modified using Windsurf (Cascade) in alignment with the architecture.
-- **KAPMAN_RESEARCH_ARCHITECTURE_v1.0.md** defines *where experimentation is allowed* and the isolation rules that prevent research code from impacting production.
+- **KAPMAN_ARCHITECTURE.md** defines *what* the system is, *why* it exists, and the architectural, data, environment, sprint, and determinism constraints that all code must obey.
+- **WINDSURF_GUIDE.md** defines *how* code is written, tested, and modified using Windsurf (Cascade) in alignment with the architecture.
+- **KAPMAN_RESEARCH_ARCHITECTURE.md** defines *where experimentation is allowed* and the isolation rules that prevent research code from impacting production.
 
 If guidance conflicts, **Architecture overrides Execution**, and **Production overrides Research**.  
 Process instructions belong in the Windsurf guide; system intent belongs here.
@@ -264,6 +264,7 @@ XOM, ZM, ZS
 │  └─ ohlcv (TimescaleDB Hypertable) - Rolling 730 trading days          │
 │                                                                         │
 │  ANALYTICAL LAYER (Portfolios / Watchlists)                             │
+│  ├─ watchlist/portfolio                             │
 │  ├─ options_chains (90-day retention)                                   │
 │  ├─ options_daily_summary (aggregated walls, Greeks)                    │
 │  └─ daily_snapshots (45+ columns: Wyckoff + all metrics)               │
@@ -295,7 +296,24 @@ XOM, ZM, ZS
 - **Isolation:** Watchlist/analytical jobs are forbidden from pulling data directly from S3—Base layer is the only ingress.
 
 ### 5.4 Analytical Layer Responsibilities
+### Watchlist Source of Truth (MVP)
 
+The MVP requires a persisted, deterministic watchlist to scope all downstream analytical
+and options ingestion workloads.
+
+- The watchlist defines the authoritative set of symbols for:
+  - Options chain ingestion
+  - Dealer metrics
+  - Volatility metrics
+  - Wyckoff analysis
+  - Recommendations
+- The watchlist MUST be:
+  - Persisted in the database
+  - Deterministically reproducible
+  - Environment-scoped (dev/test/prod)
+- Downstream jobs MUST NOT infer, hardcode, or dynamically construct the watchlist.
+
+The watchlist is treated as **data**, not configuration.
 - Consume only persisted data (`ohlcv`, options tables, `daily_snapshots`).  
 - Execute Wyckoff phase/event detection, volatility/dealer computations, and technical indicators via pandas.  
 - Produce watchlist analytics deterministically so reruns on the same `ohlcv` slice yield identical outputs.  
