@@ -1,0 +1,260 @@
+IMPLEMENTATION PROMPT — A2
+
+Local TA + Price Metric Computation
+
+You are implementing GitHub Issue A2 in the KapMan MVP.
+
+This is a batch-only, deterministic, idempotent job that computes local technical indicators, pattern-recognition signals, and price-derived metrics from persisted OHLCV data and writes them into daily_snapshots.
+
+You must follow the instructions below exactly.
+Do not invent scope, abstractions, registries, or schemas.
+
+⸻
+
+AUTHORITATIVE CONTEXT (READ FIRST)
+
+Architecture & Roadmap
+	•	Refer to:
+	•	docs/architecture/KAPMAN_ARCHITECTURE.md
+	•	docs/planning/roadmap.md
+	•	This implementation closes:
+	•	S-MET-03
+	•	FR-003, FR-006
+	•	Issue ID: A2
+
+Authoritative Indicator Surface
+	•	The complete and authoritative indicator surface is defined in:
+
+docs/reference/ta_indicator_surface.py
+
+This file:
+	•	Enumerates all technical indicators to be computed
+	•	Defines categories, required inputs, default parameters, and outputs
+	•	Includes full pandas ta indicator coverage
+	•	Includes explicit SMA variants
+	•	Includes TA-Lib candlestick pattern-recognition indicators
+
+You MUST:
+	•	Import and use this file
+	•	Compute every indicator defined there
+	•	Preserve category names and keys exactly
+	•	Persist results using the same structure
+
+Do NOT redefine, trim, or reinterpret the indicator surface.
+
+⸻
+
+WHAT YOU ARE BUILDING
+
+Implement a Python batch job that:
+	1.	Reads OHLCV history from the KapMan database
+	2.	Computes:
+	•	Full technical indicator surface (from ta_indicator_surface.py)
+	•	Explicit SMA variants: SMA14, SMA20, SMA50, SMA200
+	•	Full candlestick pattern-recognition surface (TA-Lib CDL*)
+	•	Price metrics: RVOL, VSI, HV
+	3.	Writes results into daily_snapshots as JSON blobs
+	4.	Is deterministic, idempotent, and safe to rerun or backfill
+
+⸻
+
+DATABASE CONTRACT (DO NOT CHANGE)
+
+Read from
+	•	tickers
+	•	id, is_active
+	•	ohlcv
+	•	ticker_id, date, open, high, low, close, volume
+
+Write to
+	•	daily_snapshots
+
+Populate / overwrite ONLY:
+	•	time
+	•	ticker_id
+	•	technical_indicators_json
+	•	price_metrics_json
+	•	model_version
+	•	created_at
+
+Primary key:
+
+(time, ticker_id)
+
+
+⸻
+
+TIME SEMANTICS (IMPORTANT)
+	•	Snapshot time is date-derived, not runtime-derived.
+	•	For a given OHLCV trading date D:
+
+daily_snapshots.time = D at 00:00:00 (timezone-consistent)
+
+
+	•	This job may be run for:
+	•	a single date
+	•	a date range
+	•	“fill missing snapshots”
+
+⸻
+
+EXECUTION MODEL
+
+High-level flow
+
+For each snapshot date:
+	1.	Select all tickers where is_active = TRUE
+	2.	For each ticker:
+	•	Load full OHLCV history where date <= snapshot_date
+	•	Build a pandas DataFrame with columns:
+
+open, high, low, close, volume
+
+
+	•	Compute metrics (details below)
+	•	Persist a snapshot row via idempotent upsert
+
+⸻
+
+METRIC COMPUTATION RULES
+
+1. Technical Indicators (JSON: technical_indicators_json)
+	•	Use docs/reference/ta_indicator_surface.py as the source of truth
+	•	For each indicator:
+	•	Compute using pandas ta or TA-Lib as specified
+	•	Extract only the latest value (last row)
+	•	Coerce to Python scalar (float / int)
+	•	If:
+	•	insufficient history
+	•	missing required columns
+	•	exception during computation
+→ store NULL, not omission
+
+SMA variants (explicit requirement)
+Compute and store:
+
+technical_indicators_json["trend"]["sma"]["sma_14"]
+technical_indicators_json["trend"]["sma"]["sma_20"]
+technical_indicators_json["trend"]["sma"]["sma_50"]
+technical_indicators_json["trend"]["sma"]["sma_200"]
+
+All keys must exist. Values may be numeric or NULL.
+
+Pattern recognition
+	•	Use TA-Lib candlestick functions (CDL*)
+	•	Store integer outputs under:
+
+technical_indicators_json["pattern_recognition"]
+
+
+	•	Preserve all keys defined in ta_indicator_surface.py
+	•	Values: integer or NULL
+
+⸻
+
+2. Price Metrics (JSON: price_metrics_json)
+
+These are computed manually, not via ta.
+
+Implement deterministic definitions (documented inline in code):
+	•	RVOL — relative volume vs trailing average
+	•	VSI — volume strength index (local definition)
+	•	HV — historical volatility (e.g., rolling log-return std, annualized)
+
+Rules:
+	•	Compute from the same OHLCV DataFrame
+	•	Extract latest value only
+	•	Coerce to scalar or NULL
+	•	Always emit keys:
+
+rvol, vsi, hv
+
+
+
+⸻
+
+ERROR HANDLING (NON-NEGOTIABLE)
+	•	Indicator-level failure:
+	•	Catch exception
+	•	Set that indicator’s output(s) to NULL
+	•	Continue
+	•	Insufficient history (e.g., SMA200):
+	•	Output NULL
+	•	Continue
+	•	Database read/write failure:
+	•	Abort run
+	•	JSON serialization issues:
+	•	Must not occur (coerce NaN/inf → NULL)
+	•	Abort if they do
+
+⸻
+
+IDEMPOTENT PERSISTENCE
+
+Use:
+
+INSERT ... ON CONFLICT (time, ticker_id)
+DO UPDATE SET
+  technical_indicators_json = EXCLUDED.technical_indicators_json,
+  price_metrics_json       = EXCLUDED.price_metrics_json,
+  model_version             = EXCLUDED.model_version,
+  created_at                = EXCLUDED.created_at
+
+Notes:
+	•	Safe to rerun
+	•	No deletes
+	•	No duplicate rows
+
+⸻
+
+MODEL VERSIONING
+	•	Define a static string, e.g.:
+
+model_version = "MVP-v1"
+
+
+	•	Bump only if indicator definitions or formulas change
+
+⸻
+
+TESTING EXPECTATIONS
+
+Your implementation must support:
+
+Unit tests
+	•	JSON shape and key presence
+	•	SMA variants exist
+	•	Pattern-recognition keys exist
+	•	NULL behavior for insufficient history
+
+Integration tests
+	•	Snapshot row written for a seeded ticker/date
+	•	Rerun does not create duplicates
+	•	Metrics are stable across reruns
+
+All tests must run under default pytest.
+
+⸻
+
+NON-GOALS (DO NOT IMPLEMENT)
+	•	No registries or plugin systems
+	•	No incremental/rolling computation
+	•	No schedulers
+	•	No APIs
+	•	No schema changes
+	•	No interpretation of indicators
+	•	No recommendation logic
+
+⸻
+
+FINAL INSTRUCTION
+
+Implement the A2 batch job exactly as specified above, using:
+	•	Pandas
+	•	ta
+	•	TA-Lib candlestick functions
+	•	docs/reference/ta_indicator_surface.py as the metric contract
+
+Produce clean, readable, testable code.
+
+Begin implementation.
