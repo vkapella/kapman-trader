@@ -5,13 +5,19 @@ import warnings
 from datetime import date, timedelta
 
 import pandas as pd
+import pytest
 
 from core.metrics.a2_local_ta_job import (
+    DEFAULT_TICKER_CHUNK_SIZE,
+    compute_eta_seconds,
     compute_price_metrics_json,
     compute_technical_indicators_json,
     get_indicator_surface_for_tests,
+    partition_chunks_for_workers,
+    partition_ticker_ids,
     run_a2_local_ta_job,
 )
+from scripts.run_a2_local_ta import _resolve_ticker_chunk_size, build_parser
 
 
 def _ohlcv_df(n: int) -> pd.DataFrame:
@@ -50,6 +56,8 @@ def test_technical_json_has_authoritative_shape_and_keys() -> None:
     for k in surface.PATTERN_RECOGNITION_OUTPUT_KEYS:
         assert k in technical["pattern_recognition"]
 
+    assert all(v is None for v in technical["pattern_recognition"].values())
+
 
 def test_sma_variants_exist_and_sma200_null_when_insufficient_history() -> None:
     df = _ohlcv_df(50)
@@ -70,6 +78,40 @@ def test_price_metrics_keys_always_emitted_and_null_for_short_history() -> None:
     assert metrics["rvol"] is None
     assert metrics["vsi"] is None
     assert metrics["hv"] is None
+
+
+def test_partition_ticker_ids_is_deterministic_and_lossless() -> None:
+    ids = [f"t{i}" for i in range(7)]
+    chunks = partition_ticker_ids(ids, chunk_size=3)
+    assert chunks == [["t0", "t1", "t2"], ["t3", "t4", "t5"], ["t6"]]
+    flattened = [x for c in chunks for x in c]
+    assert flattened == ids
+    assert len(set(flattened)) == len(flattened)
+
+
+def test_partition_chunks_for_workers_is_round_robin_and_deterministic() -> None:
+    chunks = list(range(8))
+    assignments = partition_chunks_for_workers(chunks, workers=3)
+    assert assignments == [[0, 3, 6], [1, 4, 7], [2, 5]]
+    flattened = [x for worker in assignments for x in worker]
+    assert sorted(flattened) == chunks
+
+
+def test_default_chunk_size_applies_when_flag_omitted() -> None:
+    args = build_parser().parse_args([])
+    source, size = _resolve_ticker_chunk_size(args)
+    assert source == "default"
+    assert size == DEFAULT_TICKER_CHUNK_SIZE
+
+
+def test_eta_math_matches_spec() -> None:
+    avg, eta = compute_eta_seconds(
+        cumulative_chunk_time_sec=10.0,
+        tickers_processed_so_far=5,
+        remaining_tickers=15,
+    )
+    assert avg == pytest.approx(2.0)
+    assert eta == pytest.approx(30.0)
 
 
 def test_warning_suppression_blocks_expected_runtimewarnings() -> None:
@@ -134,6 +176,15 @@ def test_job_emits_summary_stats(caplog, monkeypatch) -> None:
     assert isinstance(stats, dict)
     assert stats["tickers_processed"] == 2
     assert stats["snapshots_written"] == 2
+    assert stats["total_chunks"] == 1
+    assert isinstance(stats["chunk_times_sec"], list)
+    assert len(stats["chunk_times_sec"]) == 1
+    assert stats["chunk_time_sec_total"] >= 0.0
     assert stats["indicators_computed_total"] == expected_outputs_per_ticker * 2
     assert 0 <= stats["indicators_null_total"] <= stats["indicators_computed_total"]
+    assert stats["pattern_indicators_enabled"] is False
+    assert stats["pattern_backend_available"] is False
+    assert stats["pattern_indicators_attempted"] == 0
     assert stats["pattern_indicators_present"] == 0
+    assert stats["technical_indicator_time_sec"] >= 0.0
+    assert stats["pattern_indicator_time_sec"] == 0.0
