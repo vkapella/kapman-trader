@@ -596,9 +596,52 @@ LOG_LEVEL=DEBUG|INFO|WARNING
 
 ---
 
-## 17. APPENDICES
+## 17. CLI Flags
 
-### 17.1 Wyckoff Events (MVP: 8)
+Modules create that are intended to be invoked by the user should accept the following flags:
+```bash
+--log-level DEBUG|INFO|WARNING
+```
+Other flags should be settable via cli flag.
+Key parameters should have defaults but are settable/over-rideable via cli flags.
+
+
+## 18. Logging and Observability
+
+Logging and observability should consume minimal resources and be non-blocking.
+Logging defaults should be INFO.
+Logging features and thresholds should be settable via cli flag.
+
+Minimum logging requirements for batch jobs:
+
+RUN HEADER (INFO, default, once, for example):
+• time of invocation
+• parameters used to invoke
+• some metrics that describe the size and scope of the job (e.g. total tickers, total chunks)
+
+HEARTBEAT (INFO, default, cadence TBD):
+• Regular info messages with progress and relevant metrics, for example:
+• Number or precent processed
+• Remaining time estimate
+
+FINAL SUMMARY (INFO, default,   once, for example):
+• dates processed
+• totals processed
+• average per second
+• total duration
+
+Verbose modes (DEBUG, settable via cli flag):
+• detailed progress
+• detailed metrics
+• detailed errors
+• detailed warnings
+• detailed info
+• detailed debug
+
+---
+## 19. APPENDICES
+
+### 19.1 Wyckoff Events (MVP: 8)
 
 | Event | Code | Detection |
 |-------|------|-----------|
@@ -611,7 +654,7 @@ LOG_LEVEL=DEBUG|INFO|WARNING
 | Buying Climax | BC | Volume >2x avg, wide range at highs |
 | Sign of Weakness | SOW | High volume drop, break support |
 
-### 17.2 Signal Rules
+### 19.2 Signal Rules
 
 ```
 ENTRY SIGNALS (🟢):
@@ -624,7 +667,7 @@ EXIT SIGNALS (🔴):
   IF SOW detected → REDUCE POSITION
 ```
 
-### 17.3 Quick Reference Commands
+### 1   9.3 Quick Reference Commands
 
 ```bash
 # Environment management

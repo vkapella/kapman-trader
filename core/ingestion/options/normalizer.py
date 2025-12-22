@@ -55,6 +55,38 @@ def _map_option_type(value: Any) -> str | None:
 
 
 @dataclass(frozen=True)
+class NormalizedOptionContract:
+    contract_symbol: str | None
+    expiration_date: date | None
+    strike_price: Decimal | None
+    option_type: str | None
+    bid: Decimal | None
+    ask: Decimal | None
+    last: Decimal | None
+    volume: int | None
+    open_interest: int | None
+    implied_volatility: Decimal | None
+    delta: Decimal | None
+    gamma: Decimal | None
+    theta: Decimal | None
+    vega: Decimal | None
+
+    def db_expiration_date(self) -> date | None:
+        return self.expiration_date
+
+    def db_strike_price(self) -> Decimal | None:
+        if self.strike_price is None:
+            return None
+        try:
+            return self.strike_price.quantize(Decimal("0.0001"))
+        except (InvalidOperation, ValueError):
+            return None
+
+    def db_option_type(self) -> str | None:
+        return _map_option_type(self.option_type)
+
+
+@dataclass(frozen=True)
 class NormalizedPolygonSnapshot:
     break_even_price: Decimal | None
     implied_volatility: Decimal | None
@@ -157,6 +189,98 @@ def normalize_polygon_snapshot_results(results: Iterable[dict[str, Any]]) -> lis
             "raw": raw_count,
             "normalized": len(normalized),
             "dropped_non_dict": dropped_non_dict,
+        },
+    )
+    return normalized
+
+
+def polygon_snapshots_to_option_contracts(snapshots: Iterable[NormalizedPolygonSnapshot]) -> list[NormalizedOptionContract]:
+    contracts: list[NormalizedOptionContract] = []
+    raw = 0
+    for snap in snapshots:
+        raw += 1
+        contracts.append(
+            NormalizedOptionContract(
+                contract_symbol=snap.contract_ticker,
+                expiration_date=snap.expiration_date,
+                strike_price=snap.strike_price,
+                option_type=snap.contract_type,
+                bid=snap.bid,
+                ask=snap.ask,
+                last=snap.last,
+                volume=snap.day_volume,
+                open_interest=snap.open_interest,
+                implied_volatility=snap.implied_volatility,
+                delta=snap.delta,
+                gamma=snap.gamma,
+                theta=snap.theta,
+                vega=snap.vega,
+            )
+        )
+
+    logger.debug(
+        "Converted Polygon snapshots to normalized option contracts",
+        extra={
+            "stage": "normalizer",
+            "raw": raw,
+            "normalized": len(contracts),
+        },
+    )
+    return contracts
+
+
+def normalize_unicorn_contracts(
+    results: Iterable[dict[str, Any]],
+    *,
+    snapshot_date: date | None = None,
+) -> list[NormalizedOptionContract]:
+    normalized: list[NormalizedOptionContract] = []
+    raw_count = 0
+    dropped_non_dict = 0
+    dropped_expired = 0
+
+    for raw in results:
+        raw_count += 1
+        if not isinstance(raw, dict):
+            dropped_non_dict += 1
+            continue
+
+        attrs = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else raw
+
+        contract = raw.get("contract") or attrs.get("contract")
+        exp_date = _parse_date(attrs.get("exp_date"))
+
+        if snapshot_date is not None and exp_date is not None and exp_date < snapshot_date:
+            dropped_expired += 1
+            continue
+
+        normalized.append(
+            NormalizedOptionContract(
+                contract_symbol=contract if contract is not None else None,
+                expiration_date=exp_date,
+                strike_price=_parse_decimal(attrs.get("strike")),
+                option_type=attrs.get("type"),
+                bid=_parse_decimal(attrs.get("bid")),
+                ask=_parse_decimal(attrs.get("ask")),
+                last=_parse_decimal(attrs.get("last")),
+                volume=_parse_int(attrs.get("volume")),
+                open_interest=_parse_int(attrs.get("open_interest")),
+                implied_volatility=_parse_decimal(attrs.get("volatility")),
+                delta=_parse_decimal(attrs.get("delta")),
+                gamma=_parse_decimal(attrs.get("gamma")),
+                theta=_parse_decimal(attrs.get("theta")),
+                vega=_parse_decimal(attrs.get("vega")),
+            )
+        )
+
+    logger.debug(
+        "Normalized Unicorn options contracts",
+        extra={
+            "stage": "normalizer",
+            "raw": raw_count,
+            "normalized": len(normalized),
+            "dropped_non_dict": dropped_non_dict,
+            "dropped_expired": dropped_expired,
         },
     )
     return normalized

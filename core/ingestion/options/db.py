@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,8 @@ from urllib.parse import urlparse, urlunparse
 
 import psycopg2
 from psycopg2.extras import execute_values
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_psycopg2_url(db_url: str) -> str:
@@ -185,10 +188,15 @@ def upsert_options_chains_rows(
     ]
 
     total = 0
-    with conn.cursor() as cur:
-        for i in range(0, len(values), batch_size):
-            batch = values[i : i + batch_size]
-            execute_values(cur, insert_sql, batch, page_size=len(batch))
-            total += len(batch)
-    conn.commit()
+    try:
+        with conn.cursor() as cur:
+            for i in range(0, len(values), batch_size):
+                batch = values[i : i + batch_size]
+                execute_values(cur, insert_sql, batch, page_size=len(batch))
+                total += len(batch)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Options ingestion DB commit failed")
+        raise
     return UpsertOptionsResult(rows_written=total)
