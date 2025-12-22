@@ -8,15 +8,22 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Iterable
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Protocol
 
 import httpx
 from psycopg2.extras import execute_values
 
 from core.providers.market_data.polygon_options import PolygonOptionsProvider
+from core.providers.market_data.unicorn_options import UnicornOptionsProvider
 
 from . import db as options_db
-from .normalizer import NormalizedPolygonSnapshot, normalize_polygon_snapshot_results
+from .normalizer import (
+    NormalizedOptionContract,
+    NormalizedPolygonSnapshot,
+    normalize_polygon_snapshot_results,
+    normalize_unicorn_contracts,
+    polygon_snapshots_to_option_contracts,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +31,8 @@ logger = logging.getLogger(__name__)
 _API_KEY_RE = re.compile(r"(?i)(apikey|api_key|access_token|token)=([^&\\s]+)")
 _URL_QUERY_RE = re.compile(r"(https?://[^\\s\\)\\]]*?)\\?[^\\s\\)\\]]+")
 _REDACTION_INSTALLED = False
+_SUPPORTED_PROVIDERS = {"unicorn", "polygon"}
+_DEFAULT_PROVIDER = "unicorn"
 
 
 def _redact_secrets(value: str) -> str:
@@ -68,6 +77,61 @@ def _install_request_log_redaction() -> None:
     _REDACTION_INSTALLED = True
 
 
+class OptionsProvider(Protocol):
+    name: str
+    request_timeout: float
+
+    async def fetch_options_snapshot_chain(
+        self,
+        underlying: str,
+        *,
+        snapshot_date: date,
+        client: httpx.AsyncClient,
+        on_page: Callable[[int], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        ...
+
+    def normalize_results(
+        self,
+        raw_results: list[dict[str, Any]],
+        *,
+        snapshot_date: date,
+    ) -> list[NormalizedOptionContract]:
+        ...
+
+
+class PolygonOptionsProviderAdapter:
+    name = "polygon"
+
+    def __init__(self, api_key: str) -> None:
+        self._provider = PolygonOptionsProvider(api_key=api_key)
+        self.request_timeout = self._provider.request_timeout
+
+    async def fetch_options_snapshot_chain(
+        self,
+        underlying: str,
+        *,
+        snapshot_date: date,
+        client: httpx.AsyncClient,
+        on_page: Callable[[int], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        async for row in self._provider.fetch_options_snapshot_chain(
+            underlying,
+            client=client,
+            on_page=on_page,
+        ):
+            yield row
+
+    def normalize_results(
+        self,
+        raw_results: list[dict[str, Any]],
+        *,
+        snapshot_date: date,
+    ) -> list[NormalizedOptionContract]:
+        normalized = normalize_polygon_snapshot_results(raw_results)
+        return polygon_snapshots_to_option_contracts(normalized)
+
+
 class OptionsIngestionError(RuntimeError):
     pass
 
@@ -91,6 +155,7 @@ class SymbolIngestionOutcome:
 @dataclass(frozen=True)
 class OptionsIngestionReport:
     snapshot_time: datetime
+    provider: str
     symbols: list[str]
     outcomes: list[SymbolIngestionOutcome]
     total_rows_persisted: int
@@ -106,11 +171,35 @@ def dedupe_and_sort_symbols(symbols: Iterable[str]) -> list[str]:
     return sorted({str(s).strip().upper() for s in symbols if s and str(s).strip()})
 
 
-def _resolve_api_key(api_key: str | None) -> str:
-    api_key = api_key or os.environ.get("POLYGON_API_KEY")
-    if not api_key:
-        raise OptionsIngestionError("POLYGON_API_KEY is not set")
-    return api_key
+def _resolve_provider_name(cli_provider: str | None) -> str:
+    env_value = os.environ.get("OPTIONS_PROVIDER")
+    provider = (cli_provider or env_value or _DEFAULT_PROVIDER).strip().lower()
+    if provider not in _SUPPORTED_PROVIDERS:
+        raise OptionsIngestionError(f"Unsupported provider {provider!r}; expected one of {sorted(_SUPPORTED_PROVIDERS)}")
+
+    source = "cli" if cli_provider else "env" if env_value else "default"
+    logger.debug(
+        "Options provider resolved",
+        extra={
+            "stage": "pipeline",
+            "provider": provider,
+            "source": source,
+        },
+    )
+    return provider
+
+
+def _resolve_api_key(provider_name: str, api_key: str | None) -> str:
+    if api_key:
+        return api_key
+
+    env_keys = ["POLYGON_API_KEY"] if provider_name == "polygon" else ["UNICORN_API_TOKEN", "UNICORN_API_KEY", "EODHD_API_TOKEN"]
+    for key in env_keys:
+        value = os.environ.get(key)
+        if value:
+            return value
+
+    raise OptionsIngestionError(f"{env_keys[0]} is not set for provider {provider_name}")
 
 
 def _format_error_safe(exc: BaseException) -> str:
@@ -125,8 +214,16 @@ def _format_hhmmss(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _build_provider(provider_name: str, api_key: str) -> OptionsProvider:
+    if provider_name == "polygon":
+        return PolygonOptionsProviderAdapter(api_key=api_key)
+    if provider_name == "unicorn":
+        return UnicornOptionsProvider(api_token=api_key)
+    raise OptionsIngestionError(f"Unsupported provider {provider_name!r}")
+
+
 def _build_upsert_rows(
-    normalized: list[NormalizedPolygonSnapshot],
+    normalized: list[NormalizedOptionContract],
     *,
     ticker_id: str,
     snapshot_time: datetime,
@@ -140,10 +237,10 @@ def _build_upsert_rows(
         if exp is None or strike is None or opt_type is None:
             invalid.append(
                 {
-                    "contract_ticker": item.contract_ticker,
+                    "contract_ticker": item.contract_symbol,
                     "expiration_date": exp,
                     "strike_price": strike,
-                    "contract_type": item.contract_type,
+                    "contract_type": item.option_type,
                 }
             )
             continue
@@ -158,7 +255,7 @@ def _build_upsert_rows(
                 "bid": item.bid,
                 "ask": item.ask,
                 "last": item.last,
-                "volume": item.day_volume,
+                "volume": item.volume,
                 "open_interest": item.open_interest,
                 "implied_volatility": item.implied_volatility,
                 "delta": item.delta,
@@ -248,7 +345,7 @@ def _upsert_options_chains_rows_transactional(conn, *, rows: list[dict[str, Any]
 async def _ingest_one_symbol(
     *,
     db_url: str,
-    provider: PolygonOptionsProvider,
+    provider: OptionsProvider,
     symbol: str,
     ticker_id: str,
     snapshot_time: datetime,
@@ -257,23 +354,36 @@ async def _ingest_one_symbol(
 ) -> SymbolIngestionOutcome:
     started = time.perf_counter()
     snapshot_rows_fetched = 0
+    pages_fetched = 0
+    snapshot_date = snapshot_time.date()
     raw_results: list[dict[str, Any]] = []
+
+    async def on_page(rows_in_page: int) -> None:
+        nonlocal pages_fetched
+        pages_fetched += 1
+        await progress_cb(snapshot_rows_fetched_delta=0, rows_persisted_delta=0, pages_fetched_delta=1)
 
     try:
         try:
-            async for row in provider.fetch_options_snapshot_chain(symbol, client=http_client):
+            async for row in provider.fetch_options_snapshot_chain(
+                symbol,
+                snapshot_date=snapshot_date,
+                client=http_client,
+                on_page=on_page,
+            ):
                 snapshot_rows_fetched += 1
                 raw_results.append(row)
-                await progress_cb(snapshot_rows_fetched_delta=1, rows_persisted_delta=0)
+                await progress_cb(snapshot_rows_fetched_delta=1, rows_persisted_delta=0, pages_fetched_delta=0)
         except asyncio.CancelledError:
             raise
         except httpx.HTTPStatusError as exc:
             status = int(exc.response.status_code) if exc.response is not None else None
             logger.error(
-                "Polygon snapshot fetch failed",
+                "Options snapshot fetch failed",
                 extra={
                     "stage": "pipeline",
                     "symbol": symbol,
+                    "provider": getattr(provider, "name", None),
                     "status_code": status,
                     "root_cause": f"http_{status}" if status is not None else type(exc).__name__,
                     "error": _format_error_safe(exc),
@@ -282,17 +392,18 @@ async def _ingest_one_symbol(
             raise
         except Exception as exc:
             logger.error(
-                "Polygon snapshot fetch failed",
+                "Options snapshot fetch failed",
                 extra={
                     "stage": "pipeline",
                     "symbol": symbol,
+                    "provider": getattr(provider, "name", None),
                     "root_cause": type(exc).__name__,
                     "error": _format_error_safe(exc),
                 },
             )
             raise
 
-        snapshots_normalized = normalize_polygon_snapshot_results(raw_results)
+        snapshots_normalized = provider.normalize_results(raw_results, snapshot_date=snapshot_date)
         rows, invalid = _build_upsert_rows(
             snapshots_normalized,
             ticker_id=ticker_id,
@@ -305,6 +416,7 @@ async def _ingest_one_symbol(
                 extra={
                     "stage": "normalizer",
                     "symbol": symbol,
+                    "provider": getattr(provider, "name", None),
                     "root_cause": "missing_required_fields",
                     "invalid_rows": len(invalid),
                     "normalized_rows": len(snapshots_normalized),
@@ -312,61 +424,127 @@ async def _ingest_one_symbol(
                 },
             )
 
-        def _write_db() -> int:
+        def _write_db(rows_to_write: list[dict[str, Any]]) -> int:
+            total_rows = len(rows_to_write)
+            null_counts = {
+                "expiration_date": sum(1 for r in rows_to_write if r.get("expiration_date") is None),
+                "strike_price": sum(1 for r in rows_to_write if r.get("strike_price") is None),
+                "option_type": sum(1 for r in rows_to_write if r.get("option_type") is None),
+            }
+            seen_keys: set[tuple] = set()
+            dup_count = 0
+            for row in rows_to_write:
+                key = (
+                    row.get("expiration_date"),
+                    row.get("strike_price"),
+                    row.get("option_type"),
+                )
+                if key in seen_keys:
+                    dup_count += 1
+                else:
+                    seen_keys.add(key)
+
+            logger.info(
+                "Preparing to persist option rows",
+                extra={
+                    "stage": "pipeline",
+                    "symbol": symbol,
+                    "rows_total": total_rows,
+                    "null_counts": null_counts,
+                    "duplicate_key_count": dup_count,
+                    "sample_rows": rows_to_write[:3],
+                },
+            )
             conn = options_db.connect(db_url)
             try:
                 conn.autocommit = False
-                rows_written = _upsert_options_chains_rows_transactional(conn, rows=rows)
+                rows_written = _upsert_options_chains_rows_transactional(conn, rows=rows_to_write)
                 conn.commit()
                 return rows_written
-            except Exception:
+            except Exception as exc:
+                sample_row = rows_to_write[0] if rows_to_write else None
+                logger.error(
+                    "Options ingestion DB commit failed",
+                    extra={
+                        "stage": "db",
+                        "symbol": symbol,
+                        "provider": getattr(provider, "name", None),
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                        "sample_row": sample_row,
+                    },
+                )
                 conn.rollback()
                 raise
             finally:
                 conn.close()
 
+        rows_to_write: list[dict[str, Any]] = rows
+        provider_kind = getattr(provider, "name", "").lower()
+        if provider_kind == "unicorn":
+            dedupe_map: dict[tuple, dict[str, Any]] = {}
+            duplicates = 0
+            for row in rows:
+                key = (
+                    row["time"],
+                    row["ticker_id"],
+                    row["expiration_date"],
+                    row["strike_price"],
+                    row["option_type"],
+                )
+                if key in dedupe_map:
+                    duplicates += 1
+                dedupe_map[key] = row
+            rows_to_write = list(dedupe_map.values())
+            assert len(rows_to_write) == len(set(dedupe_map.keys())), (
+                f"Provider {provider_kind} dedup mismatch: duplicate_key_count={duplicates}"
+            )
+            logger.debug(
+                "Deduplicated option rows before DB write",
+                extra={
+                    "stage": "pipeline",
+                    "symbol": symbol,
+                    "provider": provider_kind,
+                    "rows_before": len(rows),
+                    "rows_after": len(rows_to_write),
+                    "duplicate_key_count": duplicates,
+                },
+            )
+
         try:
-            rows_persisted = await asyncio.to_thread(_write_db)
+            rows_persisted = await asyncio.to_thread(_write_db, rows_to_write)
         except Exception as exc:
-            logger.error(
+            logger.exception(
                 "Options ingestion DB commit failed",
                 extra={
                     "stage": "db",
                     "symbol": symbol,
-                    "root_cause": type(exc).__name__,
-                    "error": _format_error_safe(exc),
+                    "provider": getattr(provider, "name", None),
                 },
             )
             raise
 
         elapsed = time.perf_counter() - started
-        ok = rows_persisted > 0
-        if ok:
-            logger.info(
-                "Options ingestion symbol committed",
-                extra={
-                    "stage": "pipeline",
-                    "symbol": symbol,
-                    "rows_persisted": rows_persisted,
-                    "snapshot_rows_fetched": snapshot_rows_fetched,
-                    "snapshot_rows_normalized": len(snapshots_normalized),
-                    "duration_ms": int(round(elapsed * 1000)),
-                },
-            )
+        ok = True
+        log_extra = {
+            "stage": "pipeline",
+            "symbol": symbol,
+            "provider": getattr(provider, "name", None),
+            "rows_persisted": rows_persisted,
+            "snapshot_rows_fetched": snapshot_rows_fetched,
+            "snapshot_rows_normalized": len(snapshots_normalized),
+            "pages_fetched": pages_fetched,
+            "duration_ms": int(round(elapsed * 1000)),
+        }
+        if rows_persisted > 0:
+            logger.info("Options ingestion symbol committed", extra=log_extra)
         else:
-            logger.warning(
-                "0 rows persisted – symbol marked failed",
-                extra={
-                    "stage": "pipeline",
-                    "symbol": symbol,
-                    "rows_persisted": rows_persisted,
-                    "snapshot_rows_fetched": snapshot_rows_fetched,
-                    "snapshot_rows_normalized": len(snapshots_normalized),
-                    "root_cause": "zero_rows_persisted",
-                },
+            logger.info(
+                "Options ingestion symbol committed with zero rows",
+                extra={**log_extra, "root_cause": "zero_rows_persisted"},
             )
 
-        await progress_cb(snapshot_rows_fetched_delta=0, rows_persisted_delta=rows_persisted)
+        await progress_cb(snapshot_rows_fetched_delta=0, rows_persisted_delta=rows_persisted, pages_fetched_delta=0)
         return SymbolIngestionOutcome(
             symbol=symbol,
             ok=ok,
@@ -384,8 +562,10 @@ async def _ingest_one_symbol(
             extra={
                 "stage": "pipeline",
                 "symbol": symbol,
+                "provider": getattr(provider, "name", None),
                 "rows_persisted": 0,
                 "snapshot_rows_fetched": snapshot_rows_fetched,
+                "pages_fetched": pages_fetched,
                 "root_cause": type(exc).__name__,
                 "error": _format_error_safe(exc),
             },
@@ -405,18 +585,19 @@ async def _ingest_one_symbol(
 async def _run_ingestion(
     *,
     db_url: str,
-    api_key: str,
+    api_key: str | None = None,
+    provider: OptionsProvider,
+    provider_name: str | None = None,
     snapshot_time: datetime,
     as_of_date: date | None,
     concurrency: int,
     symbols: list[str],
     mode: str,
-    provider: PolygonOptionsProvider | None = None,
 ) -> OptionsIngestionReport:
     started = time.perf_counter()
     _install_request_log_redaction()
 
-    provider = provider or PolygonOptionsProvider(api_key=api_key)
+    provider_name = provider_name or getattr(provider, "name", _DEFAULT_PROVIDER)
     symbols_total = len(symbols)
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -425,6 +606,7 @@ async def _run_ingestion(
         extra={
             "stage": "pipeline",
             "mode": mode,
+            "provider": provider_name,
             "snapshot_time": snapshot_time.isoformat(),
             "as_of": as_of_date.isoformat() if as_of_date else None,
             "symbols_total": symbols_total,
@@ -439,13 +621,20 @@ async def _run_ingestion(
         "symbols_failed": 0,
         "snapshot_rows_fetched_total": 0,
         "rows_persisted_total": 0,
+        "pages_fetched_total": 0,
         "last_progress_s": started,
     }
 
-    async def report_progress(*, snapshot_rows_fetched_delta: int, rows_persisted_delta: int) -> None:
+    async def report_progress(
+        *,
+        snapshot_rows_fetched_delta: int,
+        rows_persisted_delta: int,
+        pages_fetched_delta: int,
+    ) -> None:
         async with progress_lock:
             progress["snapshot_rows_fetched_total"] += int(snapshot_rows_fetched_delta)
             progress["rows_persisted_total"] += int(rows_persisted_delta)
+            progress["pages_fetched_total"] += int(pages_fetched_delta)
             progress["last_progress_s"] = time.perf_counter()
 
     async def heartbeat() -> None:
@@ -459,6 +648,7 @@ async def _run_ingestion(
                     failed = int(progress["symbols_failed"])
                     fetched_total = int(progress["snapshot_rows_fetched_total"])
                     persisted_total = int(progress["rows_persisted_total"])
+                    pages_fetched_total = int(progress["pages_fetched_total"])
 
                 elapsed_s = max(0.0, time.perf_counter() - started)
                 logger.info(
@@ -466,6 +656,7 @@ async def _run_ingestion(
                     extra={
                         "stage": "pipeline",
                         "mode": mode,
+                        "provider": provider_name,
                         "snapshot_time": snapshot_time.isoformat(),
                         "symbols_completed": completed,
                         "symbols_total": symbols_total,
@@ -473,6 +664,7 @@ async def _run_ingestion(
                         "symbols_failed": failed,
                         "snapshot_rows_fetched_total": fetched_total,
                         "rows_persisted_total": persisted_total,
+                        "pages_fetched_total": pages_fetched_total,
                         "elapsed_s": round(elapsed_s, 6),
                     },
                 )
@@ -500,6 +692,7 @@ async def _run_ingestion(
                             extra={
                                 "stage": "pipeline",
                                 "symbol": sym,
+                                "provider": provider_name,
                                 "root_cause": "missing_ticker_id",
                             },
                         )
@@ -562,10 +755,13 @@ async def _run_ingestion(
     total_rows_persisted = sum(int(o.rows_persisted) for o in outcomes)
     total_ok = sum(1 for o in outcomes if o.ok)
     total_failed = sum(1 for o in outcomes if not o.ok)
+    total_pages_fetched = int(progress["pages_fetched_total"])
+    total_rows_fetched = int(progress["snapshot_rows_fetched_total"])
 
     if run_cancelled:
         return OptionsIngestionReport(
             snapshot_time=snapshot_time,
+            provider=provider_name,
             symbols=symbols,
             outcomes=outcomes,
             total_rows_persisted=total_rows_persisted,
@@ -578,11 +774,13 @@ async def _run_ingestion(
         extra={
             "stage": "pipeline",
             "mode": mode,
+            "provider": provider_name,
             "snapshot_time": snapshot_time.isoformat(),
             "symbols_total": symbols_total,
             "symbols_succeeded": total_ok,
             "symbols_failed": total_failed,
             "rows_persisted_total": total_rows_persisted,
+            "pages_fetched_total": total_pages_fetched,
             "elapsed_s": round(elapsed, 6),
             "duration": _format_hhmmss(elapsed),
         },
@@ -593,6 +791,7 @@ async def _run_ingestion(
 
     return OptionsIngestionReport(
         snapshot_time=snapshot_time,
+        provider=provider_name,
         symbols=symbols,
         outcomes=outcomes,
         total_rows_persisted=total_rows_persisted,
@@ -609,14 +808,24 @@ def ingest_options_chains_from_watchlists(
     snapshot_time: datetime | None = None,
     concurrency: int = 5,
     symbols: Iterable[str] | None = None,
-    provider: PolygonOptionsProvider | None = None,
+    provider: OptionsProvider | None = None,
+    provider_name: str | None = None,
 ) -> OptionsIngestionReport:
     if concurrency <= 0:
         raise OptionsIngestionError("concurrency must be > 0")
 
     db_url = db_url or options_db.default_db_url()
-    api_key = _resolve_api_key(api_key)
     snapshot_time = snapshot_time or _utcnow()
+    resolved_provider_name = getattr(provider, "name", None) or _resolve_provider_name(provider_name)
+
+    resolved_api_key = api_key
+    provider_impl = provider
+    if provider_impl is None:
+        resolved_api_key = _resolve_api_key(resolved_provider_name, api_key)
+        provider_impl = _build_provider(resolved_provider_name, resolved_api_key)
+
+    if isinstance(provider_impl, PolygonOptionsProvider):
+        provider_impl = PolygonOptionsProviderAdapter(api_key=provider_impl.api_key)
 
     with options_db.connect(db_url) as conn:
         watchlist_symbols = options_db.fetch_active_watchlist_symbols(conn)
@@ -634,12 +843,13 @@ def ingest_options_chains_from_watchlists(
     return asyncio.run(
         _run_ingestion(
             db_url=db_url,
-            api_key=api_key,
+            api_key=resolved_api_key,
+            provider=provider_impl,
+            provider_name=resolved_provider_name,
             snapshot_time=snapshot_time,
             as_of_date=as_of_date,
             concurrency=concurrency,
             symbols=selected,
             mode=mode,
-            provider=provider,
         )
     )

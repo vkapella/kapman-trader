@@ -216,11 +216,12 @@ This performs full deterministic backfill into public.ohlcv.
 python -m scripts.ingest_ohlcv base
 
 Verify OHLCV rows and date coverage:
+
+Verify retention is configured (already checked in Step 2), and that ohlcv is a hypertable:
+
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT COUNT(*) AS ohlcv_rows FROM public.ohlcv;"
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT MIN(date) AS min_date, MAX(date) AS max_date FROM public.ohlcv;"
-
-Verify retention is configured (already checked in Step 2), and that ohlcv is a hypertable:
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT hypertable_schema, hypertable_name, num_chunks, compression_enabled FROM timescaledb_information.hypertables WHERE hypertable_schema='public' AND hypertable_name='ohlcv';"
 
@@ -240,14 +241,14 @@ docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT COUNT(*) AS option
 Verify snapshot_time coverage:
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT MIN(time) AS min_snapshot_time, MAX(time) AS max_snapshot_time FROM public.options_chains;"
 
-Verify per-symbol presence (top 25 by rowcount):
+Verify per-symbol presence (top 100 by row
 docker exec -it kapman-db psql -U kapman -d kapman -c "
 SELECT t.symbol, COUNT(*) AS rows
 FROM public.options_chains oc
 JOIN public.tickers t ON t.id = oc.ticker_id
 GROUP BY t.symbol
 ORDER BY rows DESC
-LIMIT 25;
+LIMIT 100;
 "
 
 Verify queryability by (time, ticker, expiration_date):
@@ -267,28 +268,32 @@ LIMIT 100;
 Verify a single ticker’s latest snapshot surface (sample AAPL):
 docker exec -it kapman-db psql -U kapman -d kapman -c "
 SELECT
-oc.time,
-t.symbol,
-oc.expiration_date,
-oc.strike_price,
-oc.option_type,
-oc.bid,
-oc.ask,
-oc.last,
-oc.volume,
-oc.open_interest,
-oc.implied_volatility,
-oc.delta,
-oc.gamma,
-oc.theta,
-oc.vega
-FROM public.options_chains oc
-JOIN public.tickers t ON t.id = oc.ticker_id
-WHERE t.symbol = 'AAPL'
-AND oc.time = (SELECT MAX(time) FROM public.options_chains)
-ORDER BY oc.expiration_date, oc.option_type, oc.strike_price
-LIMIT 300;
-"
+    oc.time,
+    t.symbol,
+    oc.expiration_date,
+    oc.strike_price,
+    oc.option_type,
+    oc.bid,
+    oc.ask,
+    oc.last,
+    oc.volume,
+    oc.open_interest,
+    oc.implied_volatility,
+    oc.delta,
+    oc.gamma,
+    oc.theta,
+    oc.vega,
+    oc.created_at
+FROM options_chains AS oc
+JOIN tickers AS t
+    ON t.id = oc.ticker_id
+WHERE t.symbol = 'ORCL'
+ORDER BY
+    oc.time DESC,
+    oc.expiration_date ASC,
+    oc.option_type ASC,
+    oc.strike_price ASC
+LIMIT 1000;"
 
 Confirm options_chains hypertable exists and is recognized by TimescaleDB:
 docker exec -it kapman-db psql -U kapman -d kapman -c “
@@ -360,6 +365,38 @@ Inspect the daily snapshot schema
 
  \d+ daily_snapshots;
 
+Count rows for a date range with snapshots, technical indicators and price metrics,
+
+SELECT
+  DATE(time) AS snapshot_date,
+  COUNT(*)   AS total_rows
+FROM daily_snapshots
+WHERE time >= '2025-12-15'
+  AND time <  '2025-12-20'
+GROUP BY DATE(time)
+ORDER BY snapshot_date;
+
+SELECT
+  DATE(time) AS snapshot_date,
+  COUNT(*)   AS rows_with_ta
+FROM daily_snapshots
+WHERE technical_indicators_json IS NOT NULL
+  AND time >= '2025-12-15'
+  AND time <  '2025-12-20'
+GROUP BY DATE(time)
+ORDER BY snapshot_date;
+
+SELECT
+  DATE(time) AS snapshot_date,
+  COUNT(*)   AS rows_with_price_metrics
+FROM daily_snapshots
+WHERE price_metrics_json IS NOT NULL
+  AND time >= '2025-12-15'
+  AND time <  '2025-12-20'
+GROUP BY DATE(time)
+ORDER BY snapshot_date;
+
+
 Quick sanity check: latest snapshot rows
 
 SELECT ticker_id, time, jsonb_typeof(technical_indicators_json) AS ta_type,jsonb_typeof(price_metrics_json) AS price_type FROM daily_snapshots ORDER BY time DESC LIMIT 10;
@@ -400,7 +437,7 @@ SELECT
   jsonb_pretty(ds.technical_indicators_json)
 FROM daily_snapshots ds
 JOIN tickers t ON t.id = ds.ticker_id
-WHERE t.symbol = 'NVDA'
+WHERE t.symbol = 'ORCL'
 ORDER BY ds.time DESC
 LIMIT 1;
 
@@ -408,11 +445,18 @@ LIMIT 1;
 SELECT ticker_id, jsonb_pretty(technical_indicators_json) FROM daily_snapshots WHERE ticker_id = 'NVDA' ORDER BY time DESC LIMIT 1;
 
 
+Step 8 — Run Dealer Metrics
+
+docker exec -it kapman-db psql -U kapman -d kapman
+
+python -m scripts.run_a3_dealer_metrics --start-date 2025-12-15 --end-date 2025-12-19 --workers 6   
+
+dealer-dashboard to check the success of dealer metrics calculation
+
+	 docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < docs/runbooks/dealer_metrics_dashboard.sql
 
 
-⸻
-
-Step 8 — Optional: Full Integration Test Sweep (Schema + Invariants + A6.1 Coverage)
+Step 9 — Optional: Full Integration Test Sweep (Schema + Invariants + A6.1 Coverage)
 Use your integration tests to validate deterministic rebuild and A6.1 guarantees.
 
 pytest -q tests/integration/test_a5_deterministic_database_rebuild.py

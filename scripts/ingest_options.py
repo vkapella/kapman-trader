@@ -33,13 +33,17 @@ def build_parser() -> ArgumentParser:
     p = ArgumentParser(
         description=(
             "A1 options chain ingestion (watchlists -> options_chains). "
-            "Reads active symbols from public.watchlists, fetches Polygon options snapshots, "
+            "Reads active symbols from public.watchlists, fetches options snapshots from the selected provider, "
             "and upserts into public.options_chains."
         )
     )
     p.add_argument("--db-url", default=None, help="Overrides DATABASE_URL (default: env DATABASE_URL)")
-    p.add_argument("--api-key", default=None, help="Overrides POLYGON_API_KEY (default: env POLYGON_API_KEY)")
-    p.add_argument("--as-of", default=None, type=_parse_date, help="Polygon as_of date (YYYY-MM-DD)")
+    p.add_argument(
+        "--api-key",
+        default=None,
+        help="Overrides provider API key (default: env POLYGON_API_KEY or UNICORN_API_TOKEN depending on provider)",
+    )
+    p.add_argument("--as-of", default=None, type=_parse_date, help="Provider as_of date (YYYY-MM-DD)")
     p.add_argument(
         "--snapshot-time",
         default=None,
@@ -51,6 +55,12 @@ def build_parser() -> ArgumentParser:
         "--symbols",
         default=None,
         help="Comma-separated subset of symbols (still intersected with active watchlists)",
+    )
+    p.add_argument(
+        "--provider",
+        choices=["unicorn", "polygon"],
+        default=None,
+        help="Options provider (override env OPTIONS_PROVIDER; default: unicorn)",
     )
     return p
 
@@ -74,12 +84,13 @@ def main(argv: list[str]) -> int:
         snapshot_time=args.snapshot_time,
         concurrency=int(args.concurrency),
         symbols=symbols,
+        provider_name=args.provider,
     )
 
     ok = sum(1 for o in report.outcomes if o.ok)
     failed = sum(1 for o in report.outcomes if not o.ok)
     print(
-        f"✅ options ingestion complete: snapshot_time={report.snapshot_time.isoformat()} "
+        f"✅ options ingestion complete: provider={report.provider} snapshot_time={report.snapshot_time.isoformat()} "
         f"symbols={len(report.symbols)} ok={ok} failed={failed} rows_written={report.total_rows_persisted}"
     )
     if failed:

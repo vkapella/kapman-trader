@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -67,6 +67,7 @@ class PolygonOptionsProvider:
         *,
         limit: int = 250,
         client: Optional[httpx.AsyncClient] = None,
+        on_page: Optional[Callable[[int], Awaitable[None]]] = None,
     ) -> AsyncIterator[dict]:
         underlying = str(underlying).strip().upper()
         if not underlying:
@@ -256,6 +257,9 @@ class PolygonOptionsProvider:
                     for row in valid_rows:
                         yield row
 
+                    if on_page is not None:
+                        await on_page(len(valid_rows))
+
                     next_value = payload.get("next_url")
                     next_url = str(next_value).strip() if next_value else None
                     break
@@ -274,4 +278,3 @@ class PolygonOptionsProvider:
                 "url": _safe_url_for_logs(base_url),
             },
         )
-

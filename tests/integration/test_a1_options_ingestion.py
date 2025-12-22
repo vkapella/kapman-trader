@@ -12,6 +12,7 @@ import pytest
 from core.db.a6_migrations import default_migrations_dir, reset_and_migrate
 from core.ingestion.options.pipeline import ingest_options_chains_from_watchlists
 from core.providers.market_data.polygon_options import PolygonOptionsProvider
+from core.ingestion.options.normalizer import normalize_polygon_snapshot_results, polygon_snapshots_to_option_contracts
 
 
 def _test_db_url() -> str | None:
@@ -71,13 +72,22 @@ def _polygon_contract(
 
 
 class _FakeProvider:
+    name = "fake"
+
     def __init__(self, mapping: dict[str, list[dict[str, Any]]]) -> None:
         self.mapping = mapping
         self.request_timeout = 1.0
 
-    async def fetch_options_snapshot_chain(self, underlying: str, **kwargs):
-        for snap in self.mapping.get(underlying.upper(), []):
+    async def fetch_options_snapshot_chain(self, underlying: str, snapshot_date=None, on_page=None, **kwargs):
+        rows = self.mapping.get(underlying.upper(), [])
+        if on_page is not None:
+            await on_page(len(rows))
+        for snap in rows:
             yield snap
+
+    def normalize_results(self, raw_results: list[dict[str, Any]], *, snapshot_date=None):
+        snaps = normalize_polygon_snapshot_results(raw_results)
+        return polygon_snapshots_to_option_contracts(snaps)
 
 
 @pytest.mark.integration

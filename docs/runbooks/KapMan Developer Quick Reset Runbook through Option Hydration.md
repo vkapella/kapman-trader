@@ -291,11 +291,11 @@ LIMIT 300;
 "
 
 Confirm options_chains hypertable exists and is recognized by TimescaleDB:
-docker exec -it kapman-db psql -U kapman -d kapman -c “
+docker exec -it kapman-db psql -U kapman -d kapman -c "
 SELECT hypertable_schema, hypertable_name, num_chunks, compression_enabled
 FROM timescaledb_information.hypertables
-WHERE hypertable_schema=‘public’ AND hypertable_name=‘options_chains’;
-“
+WHERE hypertable_schema='public' AND hypertable_name='options_chains';
+"
 
 Confirm retention job exists for options_chains and matches 730 days:
 docker exec -it kapman-db psql -U kapman -d kapman -c "
