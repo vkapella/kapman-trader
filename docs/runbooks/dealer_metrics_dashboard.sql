@@ -2,12 +2,8 @@
 \timing on
 
 -- ============================================================
--- Dealer Metrics Dashboard (A3)
--- Non-interactive, safe for psql -f
---
--- Optional psql variable:
---   SNAPSHOT_N = rank of snapshot_time to analyze (1 = most recent)
--- If SNAPSHOT_N is not provided, defaults to 1.
+-- Dealer Metrics Dashboard (A3.1 – Corrected)
+-- Reads persisted dealer_metrics_json only
 -- ============================================================
 
 \echo
@@ -16,42 +12,27 @@
 \echo ============================================================
 \echo
 
--- ------------------------------
--- 0) Resolve snapshot selection
--- ------------------------------
+-- ------------------------------------------------------------
+-- 0) Snapshot selection
+-- ------------------------------------------------------------
 
 DROP TABLE IF EXISTS _snapshot_menu;
 
 CREATE TEMP TABLE _snapshot_menu AS
 SELECT
-    ROW_NUMBER() OVER (ORDER BY ds.time DESC) AS n,
-    ds.time AS snapshot_time,
-    COUNT(*) AS rows_total,
-    COUNT(*) FILTER (WHERE ds.dealer_metrics_json IS NOT NULL) AS rows_with_dealer_json
-FROM daily_snapshots ds
-WHERE ds.dealer_metrics_json IS NOT NULL
-GROUP BY ds.time
-ORDER BY ds.time DESC;
+    ROW_NUMBER() OVER (ORDER BY time DESC) AS n,
+    time AS snapshot_time,
+    COUNT(*) AS rows_total
+FROM daily_snapshots
+WHERE dealer_metrics_json IS NOT NULL
+GROUP BY time
+ORDER BY time DESC;
 
-\echo Recent snapshot_time values with dealer_metrics_json:
+\echo Recent snapshot_time values:
 SELECT * FROM _snapshot_menu ORDER BY n;
 
--- Default SNAPSHOT_N to 1 if not supplied
 \set SNAPSHOT_N 1
-\if :{?SNAPSHOT_N}
-\else
-\set SNAPSHOT_N 1
-\endif
 
--- Resolve chosen snapshot_time
-WITH chosen AS (
-    SELECT snapshot_time
-    FROM _snapshot_menu
-    WHERE n = :SNAPSHOT_N
-)
-SELECT snapshot_time FROM chosen;
-
--- Materialize chosen snapshot_time once
 DROP TABLE IF EXISTS _chosen_snapshot;
 CREATE TEMP TABLE _chosen_snapshot AS
 SELECT snapshot_time
@@ -63,98 +44,139 @@ WHERE n = :SNAPSHOT_N;
 SELECT snapshot_time FROM _chosen_snapshot;
 \echo
 
--- -----------------------------------------
--- 1) Coverage: rows written at snapshot_time
--- -----------------------------------------
+-- ------------------------------------------------------------
+-- 1) Coverage
+-- ------------------------------------------------------------
 
 SELECT
     COUNT(*) AS rows_at_snapshot_time,
-    COUNT(DISTINCT ds.ticker_id) AS distinct_tickers
-FROM daily_snapshots ds
-JOIN _chosen_snapshot cs ON cs.snapshot_time = ds.time;
+    COUNT(DISTINCT ticker_id) AS distinct_tickers
+FROM daily_snapshots
+WHERE time = (SELECT snapshot_time FROM _chosen_snapshot);
 
--- -----------------------------------------
--- 2) Status taxonomy distribution
--- -----------------------------------------
+-- ------------------------------------------------------------
+-- 2) Status distribution
+-- ------------------------------------------------------------
 
 SELECT
-    ds.dealer_metrics_json->'metadata'->>'status' AS status,
+    dealer_metrics_json->>'status' AS status,
     COUNT(*) AS ticker_count
-FROM daily_snapshots ds
-JOIN _chosen_snapshot cs ON cs.snapshot_time = ds.time
+FROM daily_snapshots
+WHERE time = (SELECT snapshot_time FROM _chosen_snapshot)
 GROUP BY 1
-ORDER BY ticker_count DESC, status;
+ORDER BY ticker_count DESC;
 
--- -----------------------------------------
--- 3) Summary counts
--- -----------------------------------------
+-- ------------------------------------------------------------
+-- 3) Dealer Wall Summary (Primary Walls)
+-- ------------------------------------------------------------
 
-SELECT
-    COUNT(*)                                                   AS rows_total,
-    COUNT(*) FILTER (WHERE ds.dealer_metrics_json IS NOT NULL) AS rows_with_metrics,
-    COUNT(*) FILTER (
-        WHERE ds.dealer_metrics_json->'metadata'->>'status' = 'FULL'
-    ) AS full_count,
-    COUNT(*) FILTER (
-        WHERE ds.dealer_metrics_json->'metadata'->>'status' = 'LIMITED'
-    ) AS limited_count,
-    COUNT(*) FILTER (
-        WHERE ds.dealer_metrics_json->'metadata'->>'status' = 'INVALID'
-    ) AS invalid_count
-FROM daily_snapshots ds
-JOIN _chosen_snapshot cs ON cs.snapshot_time = ds.time;
-
--- ---------------------------------------------------
--- 4) Hard guardrail: INVALID with eligible options
--- ---------------------------------------------------
-
-SELECT
-    t.symbol,
-    ds.dealer_metrics_json->'metadata'->>'status'        AS status,
-    (ds.dealer_metrics_json->>'total_options')::int      AS total_options,
-    (ds.dealer_metrics_json->>'eligible_options')::int   AS eligible_options,
-    ds.dealer_metrics_json->'metadata'->>'spot_source'   AS spot_source,
-    ds.dealer_metrics_json->'metadata'->>'effective_trading_date' AS effective_trading_date,
-    ds.dealer_metrics_json->'diagnostics'                AS diagnostics
-FROM daily_snapshots ds
-JOIN tickers t ON t.id = ds.ticker_id
-JOIN _chosen_snapshot cs ON cs.snapshot_time = ds.time
-WHERE COALESCE((ds.dealer_metrics_json->>'eligible_options')::int, 0) > 0
-  AND ds.dealer_metrics_json->'metadata'->>'status' = 'INVALID'
-ORDER BY t.symbol;
-
--- ---------------------------------------------------
--- 5) Completeness check for FULL / LIMITED
--- ---------------------------------------------------
+\echo
+\echo ============================================================
+\echo Dealer Wall Analysis (Primary)
+\echo ============================================================
 
 WITH base AS (
     SELECT
         t.symbol,
-        ds.dealer_metrics_json AS j,
-        ds.dealer_metrics_json->'metadata'->>'status' AS status
+        ds.dealer_metrics_json AS j
     FROM daily_snapshots ds
     JOIN tickers t ON t.id = ds.ticker_id
-    JOIN _chosen_snapshot cs ON cs.snapshot_time = ds.time
-    WHERE ds.dealer_metrics_json IS NOT NULL
+    WHERE ds.time = (SELECT snapshot_time FROM _chosen_snapshot)
+      AND ds.dealer_metrics_json IS NOT NULL
 )
+
 SELECT
     symbol,
-    status,
-    (j ? 'gex_total')   AS has_gex_total,
-    (j ? 'gex_net')     AS has_gex_net,
-    (j ? 'gamma_flip')  AS has_gamma_flip,
-    (j ? 'walls')       AS has_walls,
-    (j ? 'filters')     AS has_filters,
-    (j ? 'metadata')    AS has_metadata
+
+    -- Canonical spot
+    (j->>'spot_price')::numeric AS spot_price,
+
+    -- Primary call wall (persisted)
+    (j->'primary_call_wall'->>'strike')::numeric AS call_wall_strike,
+    (j->'primary_call_wall'->>'gex')::numeric    AS call_wall_gex,
+    (j->'primary_call_wall'->>'distance_from_spot')::numeric
+        AS call_wall_distance,
+
+    -- Primary put wall (persisted)
+    (j->'primary_put_wall'->>'strike')::numeric AS put_wall_strike,
+    (j->'primary_put_wall'->>'gex')::numeric    AS put_wall_gex,
+    (j->'primary_put_wall'->>'distance_from_spot')::numeric
+        AS put_wall_distance,
+
+    -- Counts
+    jsonb_array_length(j->'call_walls') AS call_wall_count,
+    jsonb_array_length(j->'put_walls')  AS put_wall_count
+
 FROM base
-WHERE status IN ('FULL','LIMITED')
-  AND NOT (
-      (j ? 'gex_total')
-  AND (j ? 'gex_net')
-  AND (j ? 'filters')
-  AND (j ? 'metadata')
-  )
-ORDER BY symbol;
+ORDER BY symbol
+LIMIT 25;
+
+-- ------------------------------------------------------------
+-- 4) Expanded Wall Detail (Top-N)
+-- ------------------------------------------------------------
+
+\echo
+\echo ------------------------------------------------------------
+\echo Expanded Wall Detail (Top N)
+\echo ------------------------------------------------------------
+
+WITH base AS (
+    SELECT
+        t.symbol,
+        ds.dealer_metrics_json AS j
+    FROM daily_snapshots ds
+    JOIN tickers t ON t.id = ds.ticker_id
+    WHERE ds.time = (SELECT snapshot_time FROM _chosen_snapshot)
+      AND ds.dealer_metrics_json IS NOT NULL
+),
+
+expanded AS (
+    SELECT
+        symbol,
+        'CALL' AS wall_type,
+        jsonb_array_elements(j->'call_walls') AS wall
+    FROM base
+
+    UNION ALL
+
+    SELECT
+        symbol,
+        'PUT' AS wall_type,
+        jsonb_array_elements(j->'put_walls') AS wall
+    FROM base
+)
+
+SELECT
+    symbol,
+    wall_type,
+    (wall->>'strike')::numeric              AS strike,
+    (wall->>'gex')::numeric                 AS gex,
+    (wall->>'weighted_gex')::numeric        AS weighted_gex,
+    (wall->>'open_interest')::int           AS open_interest,
+    (wall->>'contracts')::int               AS contracts,
+    (wall->>'distance_from_spot')::numeric  AS distance_from_spot,
+    ROUND((wall->>'moneyness')::numeric, 4) AS moneyness
+FROM expanded
+ORDER BY symbol, wall_type, weighted_gex DESC
+LIMIT 50;
+
+-- ------------------------------------------------------------
+-- 5) Sample Dealer Metrics Payload (Debug / Inspection)
+-- ------------------------------------------------------------
+
+\echo
+\echo ============================================================
+\echo Sample Dealer Metrics JSON (Representative Symbols)
+\echo ============================================================
+
+SELECT
+    t.symbol,
+    jsonb_pretty(ds.dealer_metrics_json) AS dealer_metrics_json
+FROM daily_snapshots ds
+JOIN tickers t ON t.id = ds.ticker_id
+WHERE ds.time = (SELECT snapshot_time FROM _chosen_snapshot)
+  AND t.symbol IN ('AAPL', 'NVDA', 'TSLA')
+ORDER BY t.symbol;
 
 \echo
 \echo ============================================================

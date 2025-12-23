@@ -57,7 +57,6 @@ Mandatory filters (default ON):
 	•	max DTE <= 90
 	•	min open interest per contract >= 100
 	•	min volume >= 1
-	•	max bid-ask spread <= 10%
 
 All thresholds must have defaults and be overrideable via CLI flags.
 
@@ -92,7 +91,6 @@ Key parameters must have defaults and be overrideable via CLI flags, including:
 	•	–max-dte-days (default 90)
 	•	–min-open-interest (default 100)
 	•	–min-volume (default 1)
-	•	–max-spread-pct (default 10.0)
 	•	–walls-top-n (default 3)
 	•	–gex-slope-range-pct (default 0.02)
 	•	–spot-override (optional)

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # Defaults aligned with the authoritative research input
 DEFAULT_WALLS_TOP_N = 3
 DEFAULT_GEX_SLOPE_RANGE_PCT = 0.02
+DEFAULT_MAX_MONEYNESS = 0.2
 
 
 @lru_cache(maxsize=1)
@@ -73,6 +74,7 @@ def calculate_metrics(
     spot: float,
     walls_top_n: int = DEFAULT_WALLS_TOP_N,
     gex_slope_range_pct: float = DEFAULT_GEX_SLOPE_RANGE_PCT,
+    max_moneyness: float = DEFAULT_MAX_MONEYNESS,
     iv_rank: Optional[float] = None,
 ) -> DealerComputationResult:
     """
@@ -113,8 +115,20 @@ def calculate_metrics(
     gex_net = sum(strike_gex.values())
 
     gamma_flip = module.find_gamma_flip(strike_gex)
-    call_walls = module.find_walls(list(contracts), "call", top_n=walls_top_n)
-    put_walls = module.find_walls(list(contracts), "put", top_n=walls_top_n)
+    call_walls = module.find_walls(
+        list(contracts),
+        "call",
+        spot,
+        top_n=walls_top_n,
+        max_moneyness=max_moneyness,
+    )
+    put_walls = module.find_walls(
+        list(contracts),
+        "put",
+        spot,
+        top_n=walls_top_n,
+        max_moneyness=max_moneyness,
+    )
     gex_slope = module.calculate_gex_slope(strike_gex, spot, range_pct=gex_slope_range_pct)
     dgpi = module.calculate_dgpi(gex_net, gex_slope, iv_rank)
     position = module.determine_position(gex_net)

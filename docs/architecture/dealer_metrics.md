@@ -57,11 +57,10 @@ KapMan A3 produces dealer positioning metrics per ticker into `daily_snapshots.d
     - `max_dte_days` (int)
     - `min_open_interest` (int)
     - `min_volume` (int)
-    - `max_spread_pct` (float)
     - `walls_top_n` (int)
     - `gex_slope_range_pct` (float)
   - `filter_stats` (object): Counts of filtered contracts:
-    - `total`, `expired`, `dte_exceeded`, `missing_gamma`, `low_open_interest`, `low_volume`, `wide_spread`, `other`
+    - `total`, `expired`, `dte_exceeded`, `missing_gamma`, `low_open_interest`, `low_volume`, `other`
   - `contracts_total` (int): Alias of `filter_stats.total`.
   - `contracts_used` (int): Number of option contracts that fed dealer math.
   - `diagnostics` (list[string]): Guardrail and failure annotations (e.g., `missing_spot_price`, `no_eligible_options`, `all_contracts_filtered`, `spot_resolution_failed`, `no_options_before_snapshot`).
@@ -81,3 +80,156 @@ Null / missing values reflect upstream data insufficiency, guardrail blocks, or 
 - `effective_options_time`: Per-ticker resolved options snapshot (max `options_chains.time <= snapshot_time`); prevents empty results when ingestion is intraday.
 - `effective_trading_date`: OHLCV-aligned trading date (latest market close on/before snapshot); anchors DTE and spot fallback.
 - `spot_source` / `spot_resolution_strategy` / `spot_attempted_sources`: Track how spot was resolved to avoid silent fallbacks and to audit failures.
+
+**Wall Filte Assumption**
+Below is a sanity-check of ±20% moneyness as the default wall-filter in the context of Wyckoff analysis + dealer gamma mechanics, followed by a clear recommendation.
+
+⸻
+
+Executive Answer
+
+Yes — ±20% is a defensible and reasonable default, but it should be treated as a configurable ceiling, not a universal truth.
+
+For your current use case (daily / swing Wyckoff with dealer metrics as context, not scalping signals):
+	•	±20% = correct default
+	•	±15% = often “cleaner” for high-liquidity megacaps
+	•	±25–30% = sometimes required for high-volatility / small-cap names
+
+Your instinct to make this CLI-tunable is exactly right.
+
+⸻
+
+Why ±20% Works for Wyckoff Time Horizons
+
+1. Wyckoff Is About Structure, Not Microstructure
+
+Wyckoff phases (A–E) operate over:
+	•	Days → weeks → months
+	•	Not intraday pinning or expiry-day effects
+
+Dealer walls that matter for Wyckoff must:
+	•	Influence multi-day hedging behavior
+	•	Be within realistic price travel distance
+
+A ±20% band captures:
+	•	Likely support / resistance zones
+	•	Without polluting the signal with far-OTM “inventory noise”
+
+⸻
+
+2. Dealer Hedging Reality (Key Point)
+
+Dealers dynamically hedge gamma near spot, not far OTM.
+
+As moneyness increases:
+	•	Gamma collapses rapidly
+	•	Hedging urgency drops
+	•	Deep OTM GEX becomes latent, not active
+
+Empirically:
+	•	20% OTM strikes rarely influence next 1–3 weeks of price action
+	•	They can matter in crashes or squeezes, but not as day-to-day walls
+
+So ±20% acts as a gamma-relevance boundary, not an arbitrary cutoff.
+
+⸻
+
+3. Cross-Ticker Practicality
+
+Ticker Type	Typical Daily Move	±20% Horizon Represents
+AAPL / MSFT	1–3%	~6–10 weeks
+NVDA	3–6%	~3–6 weeks
+PLTR / SOUN	5–10%	~1–3 weeks
+Small caps	8–15%	~days–weeks
+
+This lines up well with:
+	•	Your A3 snapshot cadence
+	•	Dealer metrics being recomputed daily
+	•	Wyckoff phase transitions being observed over weeks
+
+⸻
+
+When ±20% Is Too Wide or Too Narrow
+
+Too Wide When:
+	•	Mega-caps with tight volatility (AAPL, MSFT)
+	•	You see far-OTM strikes repeatedly dominating walls
+	•	Walls appear “far away” and untradeable
+
+Solution: tighten to ±15%
+
+⸻
+
+Too Narrow When:
+	•	High-beta / speculative names
+	•	Event-driven volatility
+	•	You see no walls at all after filtering
+
+Solution: widen to ±25% or ±30%
+
+⸻
+
+Recommended Default Strategy (Strongly Suggested)
+
+1. Keep ±20% as the Default
+
+It is:
+	•	Conservative
+	•	Explainable
+	•	Matches institutional behavior
+	•	Safe for most symbols
+
+2. Make It Explicit and Visible
+
+This is important for trust and debuggability.
+
+Example metadata already fits your design well:
+
+"wall_config": {
+  "max_moneyness_pct": 0.20,
+  "walls_top_n": 5,
+  "max_dte_days": 45,
+  "min_open_interest": 100
+}
+
+3. Add CLI Override (You Already Identified This Correctly)
+
+Example:
+
+python -m scripts.run_a3_dealer_metrics \
+  --snapshot-time 2025-12-22T23:59:59+00:00 \
+  --wall-max-moneyness 0.15
+
+This enables:
+	•	Per-experiment tuning
+	•	Backtesting sensitivity
+	•	Future automation (symbol-specific defaults)
+
+⸻
+
+Important: Do NOT Over-Optimize Early
+
+Claude’s suggestions are directionally correct, but order matters.
+
+Correct implementation order for A3.1:
+	1.	✅ Moneyness filter (±20%) ← MUST
+	2.	✅ Persist walls + primaries
+	3.	✅ Determinism + tests
+	4.	➕ Proximity weighting (later)
+	5.	➕ Density normalization (only if needed)
+	6.	➕ Time-decay weighting (optional)
+
+You are right to start simple and structural.
+
+⸻
+
+Bottom Line
+	•	±20% is the right default for your Wyckoff + dealer context
+	•	It matches dealer hedging reality
+	•	It avoids false walls
+	•	It is neither too aggressive nor too lax
+	•	Making it CLI-configurable is architecturally correct
+
+If you want, next we can:
+	•	Tune symbol-class defaults (mega-cap vs small-cap)
+	•	Or wire this directly into the A3.1 single-file story with explicit acceptance criteria.
