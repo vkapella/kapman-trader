@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import os
 import re
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Protocol
@@ -33,6 +35,136 @@ _URL_QUERY_RE = re.compile(r"(https?://[^\\s\\)\\]]*?)\\?[^\\s\\)\\]]+")
 _REDACTION_INSTALLED = False
 _SUPPORTED_PROVIDERS = {"unicorn", "polygon"}
 _DEFAULT_PROVIDER = "unicorn"
+_DEFAULT_LARGE_SYMBOLS = {"AAPL", "MSFT", "NVDA", "TSLA"}
+
+
+def _large_symbol_timeout(base_timeout: float) -> float:
+    return max(base_timeout * 2, base_timeout + 20.0, 60.0)
+
+
+def derive_run_id(
+    provider_name: str,
+    symbols: list[str],
+    snapshot_time: datetime,
+    as_of_date: date | None,
+    mode: str,
+) -> str:
+    normalized_symbols = ",".join(symbols)
+    components = [
+        provider_name,
+        snapshot_time.isoformat(),
+        as_of_date.isoformat() if as_of_date else "",
+        mode,
+        normalized_symbols,
+    ]
+    digest = hashlib.sha1("|".join(components).encode("utf-8")).hexdigest()
+    return digest[:8]
+
+
+class RequestRateLimiter:
+    def __init__(
+        self,
+        *,
+        max_requests_per_minute: int = 850,
+        window_s: float = 60.0,
+        target_spacing_s: float = 0.07,
+    ) -> None:
+        self._max_requests = max_requests_per_minute
+        self._window_s = window_s
+        self._spacing_s = target_spacing_s
+        self._timestamps: deque[float] = deque()
+        self._lock = asyncio.Lock()
+        self._last_request_ts = 0.0
+
+    async def wait_for_slot(self) -> None:
+        while True:
+            now = time.monotonic()
+            sleep_duration = 0.0
+            async with self._lock:
+                cutoff = now - self._window_s
+                while self._timestamps and self._timestamps[0] <= cutoff:
+                    self._timestamps.popleft()
+
+                if len(self._timestamps) >= self._max_requests:
+                    earliest = self._timestamps[0]
+                    sleep_duration = max(0.0, earliest + self._window_s - now)
+                else:
+                    elapsed = now - self._last_request_ts if self._last_request_ts else None
+                    if elapsed is not None and elapsed < self._spacing_s:
+                        sleep_duration = self._spacing_s - elapsed
+                    else:
+                        timestamp = now
+                        self._timestamps.append(timestamp)
+                        self._last_request_ts = timestamp
+                        return
+            if sleep_duration > 0:
+                await asyncio.sleep(sleep_duration)
+            else:
+                await asyncio.sleep(0)
+
+    async def handle_rate_headers(self, response: httpx.Response) -> None:
+        remaining_raw = response.headers.get("X-RateLimit-Remaining")
+        if remaining_raw is None:
+            return
+        try:
+            remaining = int(remaining_raw)
+        except Exception:
+            return
+
+        if remaining >= 50:
+            return
+
+        limit_raw = response.headers.get("X-RateLimit-Limit")
+        limit_value = None
+        if limit_raw is not None:
+            try:
+                limit_value = int(limit_raw)
+            except Exception:
+                limit_value = None
+
+        sleep_duration = 5.0 + min(5.0, (50 - remaining) * (5.0 / 49))
+        sleep_duration = min(10.0, max(5.0, sleep_duration))
+        logger.warning(
+            "Low rate-limit remaining, pausing outbound requests",
+            extra={
+                "stage": "rate_limit",
+                "remaining": remaining,
+                "limit": limit_value,
+                "sleep_s": round(sleep_duration, 3),
+            },
+        )
+        await asyncio.sleep(sleep_duration)
+
+
+GLOBAL_REQUEST_RATE_LIMITER = RequestRateLimiter()
+
+
+class ThrottledAsyncClient:
+    def __init__(self, client: httpx.AsyncClient, limiter: RequestRateLimiter) -> None:
+        self._client = client
+        self._limiter = limiter
+
+    async def __aenter__(self) -> "ThrottledAsyncClient":
+        await self._client.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool | None:
+        return await self._client.__aexit__(exc_type, exc, tb)
+
+    async def _send(self, sender: Callable[..., Awaitable[httpx.Response]], *args, **kwargs) -> httpx.Response:
+        await self._limiter.wait_for_slot()
+        response = await sender(*args, **kwargs)
+        await self._limiter.handle_rate_headers(response)
+        return response
+
+    async def get(self, *args, **kwargs) -> httpx.Response:
+        return await self._send(self._client.get, *args, **kwargs)
+
+    async def request(self, method: str, *args, **kwargs) -> httpx.Response:
+        return await self._send(self._client.request, method, *args, **kwargs)
+
+    def __getattr__(self, item):
+        return getattr(self._client, item)
 
 
 def _redact_secrets(value: str) -> str:
@@ -150,6 +282,7 @@ class SymbolIngestionOutcome:
     elapsed_s: float
     error_type: str | None = None
     error: str | None = None
+    skipped: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,10 +294,20 @@ class OptionsIngestionReport:
     total_rows_persisted: int
     elapsed_s: float
     cancelled: bool = False
+    run_id: str | None = None
 
 
-def _utcnow() -> datetime:
-    return datetime.now(tz=timezone.utc)
+def resolve_snapshot_time(as_of_date: date) -> datetime:
+    """Resolve an as_of date to the deterministic snapshot time at 23:59:59 UTC."""
+    return datetime(
+        as_of_date.year,
+        as_of_date.month,
+        as_of_date.day,
+        23,
+        59,
+        59,
+        tzinfo=timezone.utc,
+    )
 
 
 def dedupe_and_sort_symbols(symbols: Iterable[str]) -> list[str]:
@@ -342,6 +485,52 @@ def _upsert_options_chains_rows_transactional(conn, *, rows: list[dict[str, Any]
     return total
 
 
+def _option_conflict_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        row.get("time"),
+        row.get("ticker_id"),
+        row.get("expiration_date"),
+        row.get("strike_price"),
+        row.get("option_type"),
+    )
+
+
+def _should_replace_row(existing: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    for field in ("open_interest", "gamma"):
+        cand_has = candidate.get(field) is not None
+        exist_has = existing.get(field) is not None
+        if cand_has != exist_has:
+            return cand_has
+
+    candidate_volume = candidate.get("volume")
+    existing_volume = existing.get("volume")
+    if existing_volume is None and candidate_volume is None:
+        return False
+    if existing_volume is None:
+        return True
+    if candidate_volume is None:
+        return False
+    return candidate_volume > existing_volume
+
+
+def deduplicate_option_rows(rows: Iterable[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    dedupe_map: dict[tuple[Any, ...], dict[str, Any]] = {}
+    duplicates = 0
+    for row in rows:
+        key = _option_conflict_key(row)
+        existing = dedupe_map.get(key)
+        if existing is None:
+            dedupe_map[key] = row
+            continue
+        duplicates += 1
+        if _should_replace_row(existing, row):
+            dedupe_map[key] = row
+
+    deduped_rows = list(dedupe_map.values())
+    assert len(deduped_rows) == len(dedupe_map), "option dedup result mismatch"
+    return deduped_rows, duplicates
+
+
 async def _ingest_one_symbol(
     *,
     db_url: str,
@@ -479,26 +668,9 @@ async def _ingest_one_symbol(
             finally:
                 conn.close()
 
-        rows_to_write: list[dict[str, Any]] = rows
         provider_kind = getattr(provider, "name", "").lower()
-        if provider_kind == "unicorn":
-            dedupe_map: dict[tuple, dict[str, Any]] = {}
-            duplicates = 0
-            for row in rows:
-                key = (
-                    row["time"],
-                    row["ticker_id"],
-                    row["expiration_date"],
-                    row["strike_price"],
-                    row["option_type"],
-                )
-                if key in dedupe_map:
-                    duplicates += 1
-                dedupe_map[key] = row
-            rows_to_write = list(dedupe_map.values())
-            assert len(rows_to_write) == len(set(dedupe_map.keys())), (
-                f"Provider {provider_kind} dedup mismatch: duplicate_key_count={duplicates}"
-            )
+        rows_to_write, duplicate_key_count = deduplicate_option_rows(rows)
+        if duplicate_key_count:
             logger.debug(
                 "Deduplicated option rows before DB write",
                 extra={
@@ -507,7 +679,7 @@ async def _ingest_one_symbol(
                     "provider": provider_kind,
                     "rows_before": len(rows),
                     "rows_after": len(rows_to_write),
-                    "duplicate_key_count": duplicates,
+                    "duplicate_key_count": duplicate_key_count,
                 },
             )
 
@@ -593,13 +765,35 @@ async def _run_ingestion(
     concurrency: int,
     symbols: list[str],
     mode: str,
+    large_symbols: frozenset[str] | None = None,
+    large_symbol_source: str | None = None,
+    run_id: str | None = None,
+    heartbeat_interval: int = 25,
+    emit_summary: bool = False,
+    dry_run: bool = False,
 ) -> OptionsIngestionReport:
     started = time.perf_counter()
     _install_request_log_redaction()
 
     provider_name = provider_name or getattr(provider, "name", _DEFAULT_PROVIDER)
+    resolved_run_id = run_id or derive_run_id(
+        provider_name,
+        symbols,
+        snapshot_time,
+        as_of_date,
+        mode,
+    )
     symbols_total = len(symbols)
-    semaphore = asyncio.Semaphore(concurrency)
+    requested_concurrency = concurrency
+    effective_concurrency = max(1, min(concurrency, 3))
+    semaphore = asyncio.Semaphore(effective_concurrency)
+
+    normalized_large_symbols = frozenset(
+        str(s).strip().upper()
+        for s in large_symbols
+        if s and str(s).strip()
+    ) if large_symbols else frozenset()
+    resolved_large_symbol_source = large_symbol_source or "none"
 
     logger.info(
         "Options ingestion started",
@@ -610,7 +804,23 @@ async def _run_ingestion(
             "snapshot_time": snapshot_time.isoformat(),
             "as_of": as_of_date.isoformat() if as_of_date else None,
             "symbols_total": symbols_total,
-            "concurrency": concurrency,
+            "concurrency": effective_concurrency,
+            "requested_concurrency": requested_concurrency,
+            "run_id": resolved_run_id,
+        },
+    )
+
+    large_symbols_display = ", ".join(sorted(normalized_large_symbols)) if normalized_large_symbols else "none"
+    logger.info(
+        "[A1] Large-symbol isolation configured for: %s (source=%s)",
+        large_symbols_display,
+        resolved_large_symbol_source,
+        extra={
+            "stage": "pipeline",
+            "provider": provider_name,
+            "large_symbols": list(sorted(normalized_large_symbols)),
+            "large_symbol_source": resolved_large_symbol_source,
+            "run_id": resolved_run_id,
         },
     )
 
@@ -624,6 +834,10 @@ async def _run_ingestion(
         "pages_fetched_total": 0,
         "last_progress_s": started,
     }
+    if heartbeat_interval and heartbeat_interval > 0:
+        next_heartbeat_threshold = heartbeat_interval
+    else:
+        next_heartbeat_threshold = float("inf")
 
     async def report_progress(
         *,
@@ -637,50 +851,121 @@ async def _run_ingestion(
             progress["pages_fetched_total"] += int(pages_fetched_delta)
             progress["last_progress_s"] = time.perf_counter()
 
+    def _log_progress(current_symbol: str | None, snapshot: dict[str, Any]) -> None:
+        logger.info(
+            "Options ingestion progress",
+            extra={
+                "stage": "pipeline",
+                "mode": mode,
+                "provider": provider_name,
+                "snapshot_time": snapshot_time.isoformat(),
+                "symbols_completed": snapshot["symbols_completed"],
+                "symbols_total": symbols_total,
+                "symbols_succeeded": snapshot["symbols_succeeded"],
+                "symbols_failed": snapshot["symbols_failed"],
+                "snapshot_rows_fetched_total": snapshot["snapshot_rows_fetched_total"],
+                "rows_persisted_total": snapshot["rows_persisted_total"],
+                "pages_fetched_total": snapshot["pages_fetched_total"],
+                "elapsed_s": snapshot["elapsed_s"],
+                "current_symbol": current_symbol,
+                "run_id": resolved_run_id,
+            },
+        )
+
+    async def _record_outcome(outcome: SymbolIngestionOutcome, *, current_symbol: str | None) -> None:
+        nonlocal next_heartbeat_threshold
+        should_log = False
+        snapshot: dict[str, Any] = {}
+        async with progress_lock:
+            progress["symbols_completed"] += 1
+            progress["symbols_ok"] += int(outcome.ok)
+            progress["symbols_failed"] += int(not outcome.ok)
+            progress["last_progress_s"] = time.perf_counter()
+            symbols_completed = int(progress["symbols_completed"])
+            snapshot = {
+                "symbols_completed": symbols_completed,
+                "symbols_succeeded": int(progress["symbols_ok"]),
+                "symbols_failed": int(progress["symbols_failed"]),
+                "snapshot_rows_fetched_total": int(progress["snapshot_rows_fetched_total"]),
+                "rows_persisted_total": int(progress["rows_persisted_total"]),
+                "pages_fetched_total": int(progress["pages_fetched_total"]),
+                "elapsed_s": round(max(0.0, time.perf_counter() - started), 6),
+            }
+            if heartbeat_interval and symbols_completed >= next_heartbeat_threshold:
+                should_log = True
+                next_heartbeat_threshold = symbols_completed + heartbeat_interval
+        if should_log:
+            _log_progress(current_symbol, snapshot)
+
     async def heartbeat() -> None:
         interval_s = float(os.environ.get("KAPMAN_OPTIONS_INGEST_PROGRESS_S") or 30.0)
         try:
             while True:
                 await asyncio.sleep(interval_s)
                 async with progress_lock:
-                    completed = int(progress["symbols_completed"])
-                    ok = int(progress["symbols_ok"])
-                    failed = int(progress["symbols_failed"])
-                    fetched_total = int(progress["snapshot_rows_fetched_total"])
-                    persisted_total = int(progress["rows_persisted_total"])
-                    pages_fetched_total = int(progress["pages_fetched_total"])
-
-                elapsed_s = max(0.0, time.perf_counter() - started)
-                logger.info(
-                    "Options ingestion progress",
-                    extra={
-                        "stage": "pipeline",
-                        "mode": mode,
-                        "provider": provider_name,
-                        "snapshot_time": snapshot_time.isoformat(),
-                        "symbols_completed": completed,
-                        "symbols_total": symbols_total,
-                        "symbols_succeeded": ok,
-                        "symbols_failed": failed,
-                        "snapshot_rows_fetched_total": fetched_total,
-                        "rows_persisted_total": persisted_total,
-                        "pages_fetched_total": pages_fetched_total,
-                        "elapsed_s": round(elapsed_s, 6),
-                    },
-                )
+                    snapshot = {
+                        "symbols_completed": int(progress["symbols_completed"]),
+                        "symbols_succeeded": int(progress["symbols_ok"]),
+                        "symbols_failed": int(progress["symbols_failed"]),
+                        "snapshot_rows_fetched_total": int(progress["snapshot_rows_fetched_total"]),
+                        "rows_persisted_total": int(progress["rows_persisted_total"]),
+                        "pages_fetched_total": int(progress["pages_fetched_total"]),
+                        "elapsed_s": round(max(0.0, time.perf_counter() - started), 6),
+                    }
+                _log_progress(None, snapshot)
         except asyncio.CancelledError:
             return
 
     run_cancelled = False
     outcomes: list[SymbolIngestionOutcome] = []
 
-    async with httpx.AsyncClient(timeout=provider.request_timeout) as http_client:
+    async def _run_with_clients(
+        default_http_client: ThrottledAsyncClient,
+        large_symbol_http_client: ThrottledAsyncClient,
+    ) -> tuple[list[SymbolIngestionOutcome], list[SymbolIngestionOutcome]]:
+        nonlocal run_cancelled
         with options_db.connect(db_url) as lock_conn:
             lock_key = options_db.options_ingest_lock_key()
             if not options_db.try_advisory_lock(lock_conn, lock_key):
                 raise OptionsIngestionLockError("Options ingestion is already running (advisory lock not acquired)")
 
             ticker_ids = options_db.fetch_ticker_ids(lock_conn, symbols)
+
+            skipped_outcomes: list[SymbolIngestionOutcome] = []
+            symbols_to_process: list[str] = []
+            for sym in symbols:
+                ticker_id = ticker_ids.get(sym)
+                if ticker_id and options_db.has_snapshot_rows(
+                    lock_conn,
+                    ticker_id=ticker_id,
+                    snapshot_time=snapshot_time,
+                ):
+                    logger.info(
+                        "A1 symbol skipped",
+                        extra={
+                            "stage": "pipeline",
+                            "symbol": sym,
+                            "provider": provider_name,
+                            "snapshot_time": snapshot_time.isoformat(),
+                            "reason": "already_ingested",
+                            "run_id": resolved_run_id,
+                        },
+                    )
+                    outcome = SymbolIngestionOutcome(
+                        symbol=sym,
+                        ok=True,
+                        snapshot_rows_fetched=0,
+                        snapshot_rows_normalized=0,
+                        rows_persisted=0,
+                        elapsed_s=0.0,
+                        skipped=True,
+                    )
+                    skipped_outcomes.append(outcome)
+                    await _record_outcome(outcome, current_symbol=sym)
+                    continue
+                symbols_to_process.append(sym)
+
+            large_symbol_lock = asyncio.Lock()
 
             async def run_symbol(sym: str) -> SymbolIngestionOutcome:
                 async with semaphore:
@@ -697,7 +982,7 @@ async def _run_ingestion(
                             },
                         )
                         elapsed = time.perf_counter() - sym_started
-                        return SymbolIngestionOutcome(
+                        outcome = SymbolIngestionOutcome(
                             symbol=sym,
                             ok=False,
                             snapshot_rows_fetched=0,
@@ -707,32 +992,47 @@ async def _run_ingestion(
                             error_type="missing_ticker_id",
                             error="Missing ticker_id for symbol (tickers table does not contain symbol)",
                         )
+                        await _record_outcome(outcome, current_symbol=sym)
+                        return outcome
 
-                    outcome = await _ingest_one_symbol(
-                        db_url=db_url,
-                        provider=provider,
-                        symbol=sym,
-                        ticker_id=ticker_id,
-                        snapshot_time=snapshot_time,
-                        http_client=http_client,
-                        progress_cb=report_progress,
-                    )
+                    if dry_run:
+                        outcome = SymbolIngestionOutcome(
+                            symbol=sym,
+                            ok=True,
+                            snapshot_rows_fetched=0,
+                            snapshot_rows_normalized=0,
+                            rows_persisted=0,
+                            elapsed_s=0.0,
+                        )
+                    else:
+                        async def _fetch() -> SymbolIngestionOutcome:
+                            return await _ingest_one_symbol(
+                                db_url=db_url,
+                                provider=provider,
+                                symbol=sym,
+                                ticker_id=ticker_id,
+                                snapshot_time=snapshot_time,
+                                http_client=(
+                                    large_symbol_http_client if sym in normalized_large_symbols else default_http_client
+                                ),
+                                progress_cb=report_progress,
+                            )
 
-                    async with progress_lock:
-                        progress["symbols_completed"] += 1
-                        if outcome.ok:
-                            progress["symbols_ok"] += 1
+                        if sym in normalized_large_symbols:
+                            async with large_symbol_lock:
+                                outcome = await _fetch()
                         else:
-                            progress["symbols_failed"] += 1
-                        progress["last_progress_s"] = time.perf_counter()
+                            outcome = await _fetch()
 
+                    await _record_outcome(outcome, current_symbol=sym)
                     return outcome
 
-            runner_tasks = [asyncio.create_task(run_symbol(s)) for s in symbols]
+            runner_tasks = [asyncio.create_task(run_symbol(s)) for s in symbols_to_process]
             heartbeat_task: asyncio.Task | None = None
+            actual_outcomes: list[SymbolIngestionOutcome] = []
             try:
                 heartbeat_task = asyncio.create_task(heartbeat())
-                outcomes = list(await asyncio.gather(*runner_tasks))
+                actual_outcomes = list(await asyncio.gather(*runner_tasks))
             except asyncio.CancelledError:
                 run_cancelled = True
                 for t in runner_tasks:
@@ -740,7 +1040,7 @@ async def _run_ingestion(
                 results: list[object] = []
                 with contextlib.suppress(asyncio.CancelledError):
                     results = list(await asyncio.gather(*runner_tasks, return_exceptions=True))
-                outcomes = [r for r in results if isinstance(r, SymbolIngestionOutcome)]
+                actual_outcomes = [r for r in results if isinstance(r, SymbolIngestionOutcome)]
             finally:
                 if heartbeat_task is not None:
                     heartbeat_task.cancel()
@@ -750,6 +1050,29 @@ async def _run_ingestion(
                     options_db.advisory_unlock(lock_conn, lock_key)
                 except Exception:
                     logger.exception("Failed to release advisory lock", extra={"stage": "pipeline"})
+            return skipped_outcomes, actual_outcomes
+
+    default_timeout = provider.request_timeout
+    large_timeout = _large_symbol_timeout(default_timeout)
+    async with ThrottledAsyncClient(
+        httpx.AsyncClient(timeout=default_timeout),
+        GLOBAL_REQUEST_RATE_LIMITER,
+    ) as default_http_client:
+        if normalized_large_symbols:
+            async with ThrottledAsyncClient(
+                httpx.AsyncClient(timeout=large_timeout),
+                GLOBAL_REQUEST_RATE_LIMITER,
+            ) as large_symbol_http_client:
+                skipped_outcomes, actual_outcomes = await _run_with_clients(
+                    default_http_client,
+                    large_symbol_http_client,
+                )
+        else:
+            skipped_outcomes, actual_outcomes = await _run_with_clients(
+                default_http_client,
+                default_http_client,
+            )
+    outcomes = skipped_outcomes + actual_outcomes
 
     elapsed = time.perf_counter() - started
     total_rows_persisted = sum(int(o.rows_persisted) for o in outcomes)
@@ -767,6 +1090,7 @@ async def _run_ingestion(
             total_rows_persisted=total_rows_persisted,
             elapsed_s=elapsed,
             cancelled=True,
+            run_id=resolved_run_id,
         )
 
     logger.info(
@@ -783,8 +1107,24 @@ async def _run_ingestion(
             "pages_fetched_total": total_pages_fetched,
             "elapsed_s": round(elapsed, 6),
             "duration": _format_hhmmss(elapsed),
+            "run_id": resolved_run_id,
         },
     )
+
+    if emit_summary:
+        summary_extra = {
+            "stage": "pipeline",
+            "summary": True,
+            "provider": provider_name,
+            "snapshot_time": snapshot_time.isoformat(),
+            "symbols_total": symbols_total,
+            "symbols_ok": total_ok,
+            "symbols_failed": total_failed,
+            "rows_written": total_rows_persisted,
+            "duration_sec": round(elapsed, 6),
+            "run_id": resolved_run_id,
+        }
+        logger.info("Options ingestion summary", extra=summary_extra)
 
     if symbols_total > 0 and total_ok == 0:
         raise OptionsIngestionError("Options ingestion failed (all symbols failed)")
@@ -797,6 +1137,7 @@ async def _run_ingestion(
         total_rows_persisted=total_rows_persisted,
         elapsed_s=elapsed,
         cancelled=False,
+        run_id=resolved_run_id,
     )
 
 
@@ -810,12 +1151,22 @@ def ingest_options_chains_from_watchlists(
     symbols: Iterable[str] | None = None,
     provider: OptionsProvider | None = None,
     provider_name: str | None = None,
+    large_symbols: Iterable[str] | None = None,
+    run_id: str | None = None,
+    heartbeat_interval: int = 25,
+    emit_summary: bool = False,
+    dry_run: bool = False,
 ) -> OptionsIngestionReport:
     if concurrency <= 0:
         raise OptionsIngestionError("concurrency must be > 0")
 
     db_url = db_url or options_db.default_db_url()
-    snapshot_time = snapshot_time or _utcnow()
+    if snapshot_time is None:
+        if as_of_date is None:
+            as_of_date = datetime.now(timezone.utc).date()
+        snapshot_time = resolve_snapshot_time(as_of_date)
+    elif as_of_date is None:
+        as_of_date = snapshot_time.date()
     resolved_provider_name = getattr(provider, "name", None) or _resolve_provider_name(provider_name)
 
     resolved_api_key = api_key
@@ -839,6 +1190,14 @@ def ingest_options_chains_from_watchlists(
     if not selected:
         raise OptionsIngestionError("No active watchlist symbols resolved for options ingestion")
 
+    if large_symbols is None:
+        resolved_large_symbols = frozenset(_DEFAULT_LARGE_SYMBOLS)
+        large_symbol_source = "default"
+    else:
+        normalized = frozenset(str(s).strip().upper() for s in large_symbols if s and str(s).strip())
+        resolved_large_symbols = normalized
+        large_symbol_source = "cli"
+
     mode = "adhoc" if symbols is not None else "batch"
     return asyncio.run(
         _run_ingestion(
@@ -851,5 +1210,11 @@ def ingest_options_chains_from_watchlists(
             concurrency=concurrency,
             symbols=selected,
             mode=mode,
+            large_symbols=resolved_large_symbols,
+            large_symbol_source=large_symbol_source,
+            run_id=run_id,
+            heartbeat_interval=heartbeat_interval,
+            emit_summary=emit_summary,
+            dry_run=dry_run,
         )
     )

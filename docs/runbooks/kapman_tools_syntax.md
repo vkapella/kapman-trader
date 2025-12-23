@@ -71,9 +71,9 @@ usage: ingest_ohlcv.py [-h] [--db-url DB_URL] {base,incremental,backfill} ...
 
 positional arguments:
   {base,incremental,backfill}
-    base                # Full-universe base load (last N available trading days)
-    incremental         # Incremental daily ingestion
-    backfill            # Bounded historical backfill
+    base                # Full-universe base load ( OHLCV_HISTORY_DAYS or 730)
+    incremental         # Incremental daily ingestion (--date, --start, --end)
+    backfill            # Bounded historical backfill (--start, --end)
 
 optional arguments:
   -h, --help            # show this help message and exit
@@ -87,19 +87,29 @@ optional arguments:
 A1 options chain ingestion (watchlists -> options_chains). Reads active symbols from public.watchlists, fetches options snapshots from the selected provider, and upserts into public.options_chains.
 
 python -m scripts.ingest_options
-python -m scripts.ingest_options --provider unicorn --concurrency 4    
+python -m scripts.ingest_options --symbols AVGO --concurrency 1 #avoid overruning rate limits    
 
-usage: ingest_options.py [-h] [--db-url DB_URL] [--api-key API_KEY] [--as-of AS_OF] [--snapshot-time SNAPSHOT_TIME] [--concurrency CONCURRENCY] [--symbols SYMBOLS] [--provider {unicorn,polygon}]
+usage: ingest_options.py [-h] [--db-url DB_URL] [--api-key API_KEY] [--as-of AS_OF] [--snapshot-time SNAPSHOT_TIME] [--start-date START_DATE] [--end-date END_DATE] [--concurrency CONCURRENCY] [--symbols SYMBOLS] [--provider {unicorn,polygon}] [--large-symbols LARGE_SYMBOLS] [--log-level {DEBUG,INFO,WARNING,ERROR}] [--verbose] [--quiet] [--heartbeat HEARTBEAT] [--run-id RUN_ID] [--emit-summary] [--dry-run]
 
 optional arguments:
-  -h, --help                    #show this help message and exit
+  -h, --help            #show this help message and exit
   --db-url DB_URL               #Overrides DATABASE_URL (default: env DATABASE_URL)
-  --api-key API_KEY             #Overrides provider API key (default: env POLYGON_API_KEY or UNICORN_API_TOKEN depending on provider)
-  --as-of AS_OF                 #Provider as_of date (YYYY-MM-DD)
-  --snapshot-time SNAPSHOT_TIME #Snapshot time used for idempotent re-runs (ISO-8601; default: now UTC)
-  --concurrency CONCURRENCY     #Max concurrent symbols (default: 5)
-  --symbols SYMBOLS             #Comma-separated subset of symbols (still intersected with active watchlists)
-  --provider {unicorn,polygon}  #Options provider (override env OPTIONS_PROVIDER; default: unicorn)
+  --api-key API_KEY               #Overrides provider API key (default: env POLYGON_API_KEY or UNICORN_API_TOKEN depending on provider)
+  --as-of AS_OF                   #Provider as_of date (YYYY-MM-DD)
+  --snapshot-time SNAPSHOT_TIME   #Snapshot time used for idempotent re-runs (ISO-8601; default: now UTC)
+  --start-date START_DATE         #Start date for range-mode historical ingestion (YYYY-MM-DD)
+  --end-date END_DATE             #End date for range-mode historical ingestion (inclusive, YYYY-MM-DD)
+  --concurrency CONCURRENCY       #Max concurrent symbols (default: 5)
+  --symbols SYMBOLS               #Comma-separated subset of symbols (still intersected with active watchlists)
+  --provider {unicorn,polygon}    #Options provider (override env OPTIONS_PROVIDER; default: unicorn)
+  --large-symbols LARGE_SYMBOLS   #Comma-separated symbols that should be ingested serially (default: AAPL,MSFT,NVDA,TSLA)
+  --log-level {DEBUG,INFO,WARNING,ERROR} #Overrides the default logging level (default: INFO)
+  --verbose             #Shorthand for --log-level DEBUG
+  --quiet               #Suppress INFO logs (overrides --log-level unless DEBUG explicitly set)
+  --heartbeat HEARTBEAT #Emit a heartbeat log every N symbols processed (default: 25)
+  --run-id RUN_ID       #Optional run identifier for observability and tracing
+  --emit-summary        #Emit a structured INFO summary at the end of the run
+  --dry-run             #Resolve symbols and scheduling 
 
 ---
 ## COMPUTE LOCAL TA + PRICE METRICS INTO DAILY SNAPSHOTS
@@ -140,23 +150,34 @@ usage: run_a3_dealer_metrics.py [-h] [--db-url DB_URL] [--snapshot-time SNAPSHOT
 
 
 optional arguments:
-  -h, --help            show this help message and exit
-  --db-url DB_URL       Override DATABASE_URL
-  --snapshot-time SNAPSHOT_TIME
-                        Snapshot time (ISO 8601)
-  --max-dte-days MAX_DTE_DAYS
-                        Max DTE days (default 90)
-  --min-open-interest MIN_OPEN_INTEREST
-                        Min open interest per contract (default 100)
-  --min-volume MIN_VOLUME
-                        Min volume per contract (default 1)
-  --max-spread-pct MAX_SPREAD_PCT
-                        Max bid-ask spread percentage (default 10.0)
-  --walls-top-n WALLS_TOP_N
-                        Number of call/put walls to retain (default 3)
-  --gex-slope-range-pct GEX_SLOPE_RANGE_PCT
-                        Price window percentage for GEX slope (default 0.02)
-  --spot-override SPOT_OVERRIDE
-                        Override spot price for all tickers (diagnostics only)
-  --log-level {DEBUG,INFO,WARNING}
-                        Log level (default INFO)
+  -h, --help                    #show this help message and exit
+  --db-url DB_URL               #Override DATABASE_URL
+  --snapshot-time SNAPSHOT_TIME #Snapshot time (ISO 8601)
+  --max-dte-days MAX_DTE_DAYS   #Max DTE days (default 90)
+  --min-open-interest MIN_OPEN_INTEREST #Min open interest per contract (default 100)
+  --min-volume MIN_VOLUME       #Min volume per contract (default 1)
+  --max-spread-pct MAX_SPREAD_PCT #Max bid-ask spread percentage (default 10.0)
+  --walls-top-n WALLS_TOP_N     #Number of call/put walls to retain (default 3)
+  --gex-slope-range-pct GEX_SLOPE_RANGE_PCT #Price window percentage for GEX slope (default 0.02)
+  --spot-override SPOT_OVERRIDE #Override spot price for all tickers (diagnostics only)
+  --log-level {DEBUG,INFO,WARNING} #Log level (default INFO)
+
+
+
+## Compute Volatility Metrics
+
+KapMan A4: Compute volatility metrics into daily_snapshots
+
+python -m scripts.run_a4_volatility_metrics    
+
+optional arguments:
+  -h, --help                          #show this help message and exit
+  --db-url DB_URL                     #Override DATABASE_URL
+  --date DATE                         #Single trading date (YYYY-MM-DD)
+  --start-date START_DATE             #Start trading date (YYYY-MM-DD)
+  --end-date END_DATE                 #End trading date (YYYY-MM-DD)
+  --fill-missing                      #Ensure a snapshot exists for every watchlist ticker
+  --verbose                           #INFO-level per-ticker logging
+  --debug                             #DEBUG-level per-metric detail (implies --verbose)
+  --quiet                             #Only warnings + summaries
+  --heartbeat HEARTBEAT               #Heartbeat every N tickers (default: 50)  
