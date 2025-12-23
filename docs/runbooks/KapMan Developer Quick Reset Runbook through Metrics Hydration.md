@@ -225,12 +225,21 @@ docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT MIN(date) AS min_d
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT hypertable_schema, hypertable_name, num_chunks, compression_enabled FROM timescaledb_information.hypertables WHERE hypertable_schema='public' AND hypertable_name='ohlcv';"
 
+
+docker exec -i kapman-db psql -U kapman -d kapman -v ON_ERROR_STOP=1 -v DAYS_BACK=30 -v SYMBOL_LIMIT=25 < docs/runbooks/ohlcv_dashboard.sql
+
 ⸻
 
 Step 6 — Options Chains Snapshot Hydration (Snapshot-Based into options_chains)
 This ingests option snapshots for all active watchlist symbols into public.options_chains.
 
 python -m scripts.ingest_options
+
+**run the options dashboard to verify**
+
+docker exec -i kapman-db psql -U kapman -d kapman -v  ON_ERROR_STOP=1 <docs/runbooks/options_chains_dashboard.sql
+
+**run the options dashboard to verify**
 
 If you want to scope to a subset during smoke testing:
 python -m scripts.ingest_options –concurrency 1 –symbols AAPL
@@ -453,7 +462,7 @@ python -m scripts.run_a3_dealer_metrics --start-date 2025-12-15 --end-date 2025-
 
 dealer-dashboard to check the success of dealer metrics calculation
 
-	 docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < docs/runbooks/dealer_metrics_dashboard.sql
+docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < docs/runbooks/dealer_metrics_dashboard.sql
 
 
 Step 9 — Optional: Full Integration Test Sweep (Schema + Invariants + A6.1 Coverage)

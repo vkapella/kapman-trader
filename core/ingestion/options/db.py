@@ -112,6 +112,20 @@ def fetch_contract_keys_at_snapshot(
     return keys
 
 
+def has_snapshot_rows(
+    conn,
+    *,
+    ticker_id: str,
+    snapshot_time: datetime,
+) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM options_chains WHERE ticker_id = %s AND time = %s LIMIT 1",
+            (ticker_id, snapshot_time),
+        )
+        return cur.fetchone() is not None
+
+
 @dataclass(frozen=True)
 class UpsertOptionsResult:
     rows_written: int
