@@ -460,10 +460,11 @@ docker exec -it kapman-db psql -U kapman -d kapman
 
 python -m scripts.run_a3_dealer_metrics --start-date 2025-12-15 --end-date 2025-12-19 --workers 6   
 
-dealer-dashboard to check the success of dealer metrics calculation
+**dealer-dashboard to check the success of dealer metrics calculation**
 
 docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < docs/runbooks/dealer_metrics_dashboard.sql
 
+**dealer-dashboard to check the success of dealer metrics calculation** 
 
 Step 9 — Optional: Full Integration Test Sweep (Schema + Invariants + A6.1 Coverage)
 Use your integration tests to validate deterministic rebuild and A6.1 guarantees.

@@ -143,34 +143,93 @@ def find_gamma_flip(strike_gex: Dict[float, float]) -> Optional[float]:
     return None
 
 
-def find_walls(contracts: List[OptionContract], contract_type: str, top_n: int = 3) -> List[Dict[str, Any]]:
+WALL_WEIGHT_TIERS = (
+    (0.05, 1.0),
+    (0.10, 0.7),
+    (0.15, 0.4),
+    (0.20, 0.2),
+)
+
+
+def _moneyness_weight(moneyness: float) -> float:
     """
-    Find top N strikes with highest open interest for given contract type.
-    
-    These represent support (put walls) and resistance (call walls) levels.
-    
+    Step-based proximity weight for wall ranking.
+    """
+    for threshold, weight in WALL_WEIGHT_TIERS:
+        if moneyness <= threshold:
+            return weight
+    # Default to the lowest tier if beyond defined thresholds.
+    return WALL_WEIGHT_TIERS[-1][1]
+
+
+def find_walls(
+    contracts: List[OptionContract],
+    contract_type: str,
+    spot: float,
+    top_n: int = 3,
+    max_moneyness: float = 0.2,
+) -> List[Dict[str, Any]]:
+    """
+    Aggregate gamma exposure at each strike and rank the top N walls by proximity-weighted GEX.
+
     Args:
         contracts: List of option contracts
         contract_type: 'call' or 'put'
+        spot: Underlying spot price
         top_n: Number of walls to return
-        
+        max_moneyness: Filter threshold as a fraction of spot
+
     Returns:
-        List of dicts with strike and open_interest
+        List of dicts with strike-level wall data (gex, weighted_gex, open_interest, contracts, moneyness)
     """
-    filtered = [c for c in contracts if c.contract_type.lower() == contract_type.lower() and c.open_interest > 0]
-    
-    # Sort by open interest descending
-    sorted_contracts = sorted(filtered, key=lambda c: c.open_interest, reverse=True)
-    
-    walls = []
-    for c in sorted_contracts[:top_n]:
-        walls.append({
-            "strike": c.strike,
-            "open_interest": c.open_interest,
-            "volume": c.volume
-        })
-    
-    return walls
+    if not contracts or spot <= 0 or top_n <= 0:
+        return []
+
+    max_moneyness = max(0.0, float(max_moneyness))
+    aggregated: Dict[float, Dict[str, Any]] = {}
+    target_type = contract_type.lower()
+
+    for contract in contracts:
+        if contract.contract_type.lower() != target_type:
+            continue
+        if contract.open_interest <= 0 or contract.gamma is None:
+            continue
+
+        strike = contract.strike
+        moneyness = abs(strike - spot) / spot
+        if moneyness > max_moneyness:
+            continue
+
+        gex = calculate_contract_gex(contract, spot)
+        entry = aggregated.setdefault(
+            strike,
+            {"strike": strike, "gex": 0.0, "open_interest": 0, "contracts": 0},
+        )
+        entry["gex"] += gex
+        entry["open_interest"] += contract.open_interest
+        entry["contracts"] += 1
+
+    walls: List[Dict[str, Any]] = []
+    for strike, data in aggregated.items():
+        if data["contracts"] == 0:
+            continue
+        moneyness = abs(strike - spot) / spot
+        weight = _moneyness_weight(moneyness)
+        weighted_gex = abs(data["gex"]) * weight
+        walls.append(
+            {
+                "strike": strike,
+                "gex": round(data["gex"], 2),
+                "weighted_gex": round(weighted_gex, 2),
+                "moneyness": round(moneyness, 6),
+                "open_interest": data["open_interest"],
+                "contracts": data["contracts"],
+                "distance_from_spot": round(strike - spot, 6),
+            }
+        )
+
+    walls.sort(key=lambda item: (-item["weighted_gex"], item["strike"]))
+    return walls[:top_n]
 
 
 def calculate_gex_slope(strike_gex: Dict[float, float], spot: float, range_pct: float = 0.02) -> Optional[float]:
@@ -345,8 +404,8 @@ def calculate_dealer_metrics(
     gamma_flip = find_gamma_flip(strike_gex)
     
     # Call and put walls
-    call_walls = find_walls(contracts, "call", top_n=3)
-    put_walls = find_walls(contracts, "put", top_n=3)
+    call_walls = find_walls(contracts, "call", spot, top_n=3)
+    put_walls = find_walls(contracts, "put", spot, top_n=3)
     
     # GEX slope
     gex_slope = calculate_gex_slope(strike_gex, spot)

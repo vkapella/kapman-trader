@@ -140,27 +140,26 @@ optional arguments:
                         
 ## Compute Dealer Metrics
 
-KapMan A3: Compute dealer metrics into daily_snapshots    
+KapMan A3: Compute dealer metrics into daily_snapshots 
 
 python -m scripts.run_a3_dealer_metrics   
 
 usage: run_a3_dealer_metrics.py [-h] [--db-url DB_URL] [--snapshot-time SNAPSHOT_TIME] [--max-dte-days MAX_DTE_DAYS] [--min-open-interest MIN_OPEN_INTEREST] [--min-volume MIN_VOLUME]
-[--max-spread-pct MAX_SPREAD_PCT] [--walls-top-n WALLS_TOP_N] [--gex-slope-range-pct GEX_SLOPE_RANGE_PCT] [--spot-override SPOT_OVERRIDE] [--log-level {DEBUG,INFO,WARNING}]
-
+[--walls-top-n WALLS_TOP_N] [--gex-slope-range-pct GEX_SLOPE_RANGE_PCT] [--max-moneyness MAX_MONEYNESS] [--spot-override SPOT_OVERRIDE] [--log-level {DEBUG,INFO,WARNING}]
 
 
 optional arguments:
-  -h, --help                    #show this help message and exit
-  --db-url DB_URL               #Override DATABASE_URL
-  --snapshot-time SNAPSHOT_TIME #Snapshot time (ISO 8601)
-  --max-dte-days MAX_DTE_DAYS   #Max DTE days (default 90)
+  -h, --help                            #show this help message and exit
+  --db-url DB_URL                       #Override DATABASE_URL
+  --snapshot-time SNAPSHOT_TIME         #Snapshot time (ISO 8601)
+  --max-dte-days MAX_DTE_DAYS           #Max DTE days (default 90)
   --min-open-interest MIN_OPEN_INTEREST #Min open interest per contract (default 100)
-  --min-volume MIN_VOLUME       #Min volume per contract (default 1)
-  --max-spread-pct MAX_SPREAD_PCT #Max bid-ask spread percentage (default 10.0)
-  --walls-top-n WALLS_TOP_N     #Number of call/put walls to retain (default 3)
+  --min-volume MIN_VOLUME               #Min volume per contract (default 1)
+  --walls-top-n WALLS_TOP_N             #Number of call/put walls to retain (default 3)
   --gex-slope-range-pct GEX_SLOPE_RANGE_PCT #Price window percentage for GEX slope (default 0.02)
-  --spot-override SPOT_OVERRIDE #Override spot price for all tickers (diagnostics only)
-  --log-level {DEBUG,INFO,WARNING} #Log level (default INFO)
+  --max-moneyness MAX_MONEYNESS         #Max moneyness fraction for wall eligibility (default 0.2)
+  --spot-override SPOT_OVERRIDE         #Override spot price for all tickers (diagnostics only)
+  --log-level {DEBUG,INFO,WARNING}      #Log level (default INFO)
 
 
 

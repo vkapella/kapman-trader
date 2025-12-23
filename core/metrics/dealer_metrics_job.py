@@ -15,6 +15,7 @@ from psycopg2.extras import Json
 from core.ingestion.options import db as options_db
 from core.metrics.dealer_metrics_calc import (
     DEFAULT_GEX_SLOPE_RANGE_PCT,
+    DEFAULT_MAX_MONEYNESS,
     DEFAULT_WALLS_TOP_N,
     DealerComputationResult,
     build_option_contract,
@@ -27,7 +28,6 @@ DEFAULT_MODEL_VERSION = "A3-dealer-metrics-v1"
 DEFAULT_MAX_DTE_DAYS = 90
 DEFAULT_MIN_OPEN_INTEREST = 100
 DEFAULT_MIN_VOLUME = 1
-DEFAULT_MAX_SPREAD_PCT = 10.0
 DEFAULT_HEARTBEAT_SECONDS = 60
 DEFAULT_HEARTBEAT_TICKERS = 25
 
@@ -42,7 +42,6 @@ class FilterStats:
     missing_gamma: int = 0
     low_open_interest: int = 0
     low_volume: int = 0
-    wide_spread: int = 0
     other: int = 0
 
     def to_dict(self) -> Dict[str, int]:
@@ -53,13 +52,33 @@ class FilterStats:
             "missing_gamma": self.missing_gamma,
             "low_open_interest": self.low_open_interest,
             "low_volume": self.low_volume,
-            "wide_spread": self.wide_spread,
             "other": self.other,
         }
 
 
 def _json_dumps_strict(value: Any) -> str:
     return json.dumps(value, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+
+def _persist_walls_with_distance(
+    walls: Sequence[Dict[str, Any]],
+    spot_price: Optional[float],
+) -> List[Dict[str, Any]]:
+    """
+    Return wall data with normalized absolute distances from spot for persistence.
+    """
+    spot_value = _safe_float(spot_price)
+    persisted: List[Dict[str, Any]] = []
+    for wall in walls:
+        wall_copy = dict(wall)
+        distance = None
+        if spot_value is not None:
+            strike = _safe_float(wall_copy.get("strike"))
+            if strike is not None:
+                distance = round(abs(strike - spot_value), 6)
+        wall_copy["distance_from_spot"] = distance
+        persisted.append(wall_copy)
+    return persisted
 
 
 def classify_dealer_status(
@@ -191,19 +210,6 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
-def _bid_ask_spread_pct(bid: Optional[float], ask: Optional[float]) -> Optional[float]:
-    if bid is None or ask is None:
-        return None
-    try:
-        if bid <= 0 or ask <= 0 or ask < bid:
-            return None
-        mid = 0.5 * (ask + bid)
-        if mid <= 0:
-            return None
-        return ((ask - bid) / mid) * 100.0
-    except Exception:
-        return None
-
 
 def _load_spot_price(conn, *, ticker_id: str, snapshot_date: date) -> Optional[float]:
     with conn.cursor() as cur:
@@ -266,7 +272,6 @@ def _load_option_contracts(
     max_dte_days: int,
     min_open_interest: int,
     min_volume: int,
-    max_spread_pct: float,
 ) -> Tuple[List[Any], FilterStats]:
     if effective_options_date is None or effective_options_time is None:
         return [], FilterStats()
@@ -340,11 +345,6 @@ def _load_option_contracts(
         vol = _safe_float(volume)
         if vol is None or vol < min_volume:
             stats.low_volume += 1
-            continue
-
-        spread_pct = _bid_ask_spread_pct(_safe_float(bid), _safe_float(ask))
-        if spread_pct is None or spread_pct > max_spread_pct:
-            stats.wide_spread += 1
             continue
 
         try:
@@ -429,7 +429,13 @@ def _build_payload(
     status_reason: str,
     eligible_options: int,
     total_options: int,
+    max_moneyness: float,
 ) -> Dict[str, Any]:
+    persisted_call_walls = _persist_walls_with_distance(computation.call_walls, spot)
+    persisted_put_walls = _persist_walls_with_distance(computation.put_walls, spot)
+    primary_call_wall = dict(persisted_call_walls[0]) if persisted_call_walls else None
+    primary_put_wall = dict(persisted_put_walls[0]) if persisted_put_walls else None
+
     return {
         "status": quality_status,
         "failure_reason": failure_reason,
@@ -440,8 +446,15 @@ def _build_payload(
         "gex_total": computation.gex_total,
         "gex_net": computation.gex_net,
         "gamma_flip": computation.gamma_flip,
-        "call_walls": computation.call_walls,
-        "put_walls": computation.put_walls,
+        "call_walls": persisted_call_walls,
+        "put_walls": persisted_put_walls,
+        "primary_call_wall": primary_call_wall,
+        "primary_put_wall": primary_put_wall,
+        "wall_config": {
+            "max_moneyness": max_moneyness,
+            "walls_top_n": params.get("walls_top_n"),
+            "max_dte_days": params.get("max_dte_days"),
+        },
         "gex_slope": computation.gex_slope,
         "dgpi": computation.dgpi,
         "position": computation.position,
@@ -508,9 +521,9 @@ def run_dealer_metrics_job(
     max_dte_days: int = DEFAULT_MAX_DTE_DAYS,
     min_open_interest: int = DEFAULT_MIN_OPEN_INTEREST,
     min_volume: int = DEFAULT_MIN_VOLUME,
-    max_spread_pct: float = DEFAULT_MAX_SPREAD_PCT,
     walls_top_n: int = DEFAULT_WALLS_TOP_N,
     gex_slope_range_pct: float = DEFAULT_GEX_SLOPE_RANGE_PCT,
+    max_moneyness: float = DEFAULT_MAX_MONEYNESS,
     spot_override: Optional[float] = None,
     heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
     heartbeat_tickers: int = DEFAULT_HEARTBEAT_TICKERS,
@@ -535,15 +548,15 @@ def run_dealer_metrics_job(
 
     log.info(
         "[A3] RUN HEADER snapshot_time=%s max_dte_days=%s min_open_interest=%s "
-        "min_volume=%s max_spread_pct=%.4f walls_top_n=%s gex_slope_range_pct=%.4f "
+        "min_volume=%s walls_top_n=%s gex_slope_range_pct=%.4f max_moneyness=%.4f "
         "spot_override=%s tickers=%s heartbeat_seconds=%s heartbeat_tickers=%s deterministic=true",
         snapshot_ts.isoformat(),
         max_dte_days,
         min_open_interest,
         min_volume,
-        max_spread_pct,
         walls_top_n,
         gex_slope_range_pct,
+        max_moneyness,
         spot_override,
         total_tickers,
         heartbeat_seconds,
@@ -554,9 +567,9 @@ def run_dealer_metrics_job(
         "max_dte_days": max_dte_days,
         "min_open_interest": min_open_interest,
         "min_volume": min_volume,
-        "max_spread_pct": max_spread_pct,
         "walls_top_n": walls_top_n,
         "gex_slope_range_pct": gex_slope_range_pct,
+        "max_moneyness": max_moneyness,
     }
 
     processed = 0
@@ -622,7 +635,6 @@ def run_dealer_metrics_job(
                 max_dte_days=max_dte_days,
                 min_open_interest=min_open_interest,
                 min_volume=min_volume,
-                max_spread_pct=max_spread_pct,
             )
 
             eligible_options = len(contracts)
@@ -634,8 +646,7 @@ def run_dealer_metrics_job(
                     f"max_dte_days={max_dte_days},"
                     f"dte_exceeded={filter_stats.dte_exceeded},"
                     f"low_open_interest={filter_stats.low_open_interest},"
-                    f"low_volume={filter_stats.low_volume},"
-                    f"wide_spread={filter_stats.wide_spread}"
+                    f"low_volume={filter_stats.low_volume}"
                 )
             if spot is None:
                 diagnostics.append("missing_spot_price")
@@ -671,6 +682,7 @@ def run_dealer_metrics_job(
                     spot=spot,
                     walls_top_n=walls_top_n,
                     gex_slope_range_pct=gex_slope_range_pct,
+                    max_moneyness=max_moneyness,
                 )
                 status = "SUCCESS"
                 failure_reason = None
@@ -717,6 +729,7 @@ def run_dealer_metrics_job(
                 status_reason=status_reason,
                 eligible_options=eligible_options,
                 total_options=total_options,
+                max_moneyness=max_moneyness,
             )
 
             metadata_status = _determine_metadata_status(
@@ -822,6 +835,7 @@ def run_dealer_metrics_job(
                     status_reason="exception",
                     eligible_options=0,
                     total_options=0,
+                    max_moneyness=max_moneyness,
                 )
                 metadata_status = _determine_metadata_status(
                     eligible_options=0,
@@ -913,12 +927,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Min volume per contract (default 1)",
     )
     parser.add_argument(
-        "--max-spread-pct",
-        type=float,
-        default=DEFAULT_MAX_SPREAD_PCT,
-        help="Max bid-ask spread percentage (default 10.0)",
-    )
-    parser.add_argument(
         "--walls-top-n",
         type=int,
         default=DEFAULT_WALLS_TOP_N,
@@ -929,6 +937,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_GEX_SLOPE_RANGE_PCT,
         help="Price window percentage for GEX slope (default 0.02)",
+    )
+    parser.add_argument(
+        "--max-moneyness",
+        type=float,
+        default=DEFAULT_MAX_MONEYNESS,
+        help="Max moneyness fraction for wall eligibility (default 0.2)",
     )
     parser.add_argument(
         "--spot-override",
@@ -973,9 +987,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             max_dte_days=args.max_dte_days,
             min_open_interest=args.min_open_interest,
             min_volume=args.min_volume,
-            max_spread_pct=args.max_spread_pct,
             walls_top_n=args.walls_top_n,
             gex_slope_range_pct=args.gex_slope_range_pct,
+            max_moneyness=args.max_moneyness,
             spot_override=args.spot_override,
             log=log,
         )

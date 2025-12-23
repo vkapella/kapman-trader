@@ -84,7 +84,6 @@ Mandatory (default ON):
 
 Liquidity / Realism (default ON):
 	•	Min volume ≥ 1
-	•	Max bid-ask spread ≤ 10%
 
 Spot Price (Authoritative)
 	•	ohlcv.close for the snapshot date
@@ -115,7 +114,6 @@ CLI Parameters (Defaults + Overrides)
 	•	--max-dte-days (default: 90)
 	•	--min-open-interest (default: 100)
 	•	--min-volume (default: 1)
-	•	--max-spread-pct (default: 10.0)
 	•	--walls-top-n (default: 3)
 	•	--gex-slope-range-pct (default: 0.02)
 	•	--spot-override (optional)

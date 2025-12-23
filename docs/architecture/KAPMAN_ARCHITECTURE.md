@@ -337,6 +337,15 @@ The watchlist is treated as **data**, not configuration.
 | **Price Metrics** | rvol, vsi, hv_20, hv_60, iv_hv_diff |
 | **JSONB Storage** | technical_indicators_json, dealer_metrics_json, volatility_metrics_json, price_metrics_json |
 
+Bid/ask data is not collected.
+Spread-based logic is forbidden.
+Dealer metrics must be derivable from:
+	•	open interest
+	•	gamma
+	•	volume
+	•	strike proximity
+	•	DTE
+	•	spot price
 ---
 
 ## 6. SERVICE ARCHITECTURE
