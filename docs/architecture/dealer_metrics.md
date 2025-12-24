@@ -1,235 +1,245 @@
-# Dealer Metrics Status Taxonomy
+## Dealer Metrics Status Semantics (Authoritative)
 
-KapMan A3 emits a deterministic status for each ticker in `dealer_metrics_json.status`. This classification is numeric and auditable; dealer math and filters are unchanged.
+A3 assigns **two distinct status concepts** that must not be conflated:
 
-- **FULL**  
-  - Conditions (all): `eligible_options >= 25`, `gex_total` and `gex_net` are not null, `abs(gex_total) > 0`, `position != "unknown"`, and `confidence` is `high` or `medium`.  
-  - Usage: Actionable dealer signal; suitable for Wyckoff overlays, dashboards, scoring, and regime analysis.
+1. **Top-level `status`** — *authoritative data-quality contract for downstream consumers*
+2. **`metadata.status`** — *operational/debug heuristic*
 
-- **LIMITED**  
-  - Conditions (all): `eligible_options >= 1`, `gex_total` and `gex_net` are not null, `abs(gex_total) > 0`, `position` in (`long_gamma`, `short_gamma`, `neutral`), and `confidence` is `medium` or `invalid`.  
-  - Usage: Valid but thin/fragile signal; display with reduced weight, avoid using as primary driver for ranking or Wyckoff decisions.
+Downstream logic (Wyckoff, scoring, ranking, recommendations) **MUST key off the top-level `status` only**.
 
-- **INVALID**  
-  - Conditions (any): `eligible_options == 0`, `gex_total` is null, `gex_net` is null, spot missing or spot resolution failed, diagnostics include `all_contracts_filtered` or `no_options_available`.  
-  - Usage: Insufficient signal; exclude from scoring, ranking, and strategy logic.
+---
 
-Supporting context is stored in `dealer_metrics_json.metadata`, including `eligible_options`, `total_options`, `confidence`, and `status_reason` for downstream auditing.
-# Dealer Metrics Status Taxonomy and JSON Schema
+### Top-Level `status` (Contractual)
 
-## Overview
-KapMan A3 produces dealer positioning metrics per ticker into `daily_snapshots.dealer_metrics_json` whenever options snapshots, spot resolution, and guardrails succeed. Results describe dealer gamma exposure, positioning, and wall structure for the resolved snapshot time. Runs occur on watchlist tickers at the most recent options snapshot time (or provided `--snapshot-time`), using deterministic option/spot selection rules.
+The top-level `dealer_metrics_json.status` classifies whether dealer metrics are *usable*, *fragile*, or *invalid* for decision-making.
 
-## Dealer Metrics JSON Schema
-- `status` (string: `FULL` | `LIMITED` | `INVALID`): Quality classification derived from the computed metrics and eligibility counts.
-- `failure_reason` (string | null): Failure code when computation could not be completed; null on successful computation.
-- `spot_price` (float | null): Resolved underlying spot price (override, price_metrics, or OHLCV fallback).
-- `spot_price_source` (string | null): Provenance of `spot_price` (`override`, `price_metrics.<key>`, or `ohlcv`).
-- `eligible_options_count` (int): Count of option contracts that passed all filters.
-- `total_options_count` (int): Count of option contracts ingested for the ticker at the effective options time.
-- `gex_total` (float | null): Sum of absolute gamma exposure across strikes (rounded to 2 decimals).
-- `gex_net` (float | null): Net gamma exposure across strikes (rounded to 2 decimals).
-- `gamma_flip` (float | null): Strike level where cumulative GEX crosses zero (None if no crossing).
-- `call_walls` (list of objects): Top-N call walls; each `{ "strike": float, "open_interest": int, "volume": int }`.
-- `put_walls` (list of objects): Top-N put walls; each `{ "strike": float, "open_interest": int, "volume": int }`.
-- `gex_slope` (float | null): GEX slope around spot using configured range_pct; null if insufficient data.
-- `dgpi` (float | null): Dealer Gamma Pressure Index derived from gex_net and gex_slope.
-- `position` (string): Dealer positioning label (`long_gamma`, `short_gamma`, `neutral`, `unknown`).
-- `confidence` (string): Confidence bucket from dealer calc (`high`, `medium`, `low`, `invalid`).
-- `metadata` (object):
-  - `snapshot_time` (ISO datetime): Snapshot timestamp used for resolution/logging.
-  - `snapshot_date` (ISO date): Date portion of `snapshot_time`.
-  - `ticker_id` (string): Internal ticker identifier.
-  - `symbol` (string): Uppercase ticker symbol.
-  - `processing_status` (string): A3 processing outcome (`SUCCESS`, `FAIL_*`, or `COMPUTATION_ERROR`).
-  - `spot` (float | null): Echo of `spot_price`.
-  - `spot_source` (string | null): Echo of `spot_price_source`.
-  - `spot_resolution_strategy` (string | null): Strategy used (`override`, `price_metrics`, `ohlcv_fallback`).
-  - `effective_options_time` (ISO datetime | null): Resolved options snapshot time (max `options_chains.time <= snapshot_time`).
-  - `options_time_resolution_strategy` (string | null): Currently `max_leq_snapshot`.
-  - `effective_trading_date` (ISO date | null): Trading date aligned to OHLCV for spot/filters.
-  - `spot_attempted_sources` (list[string]): Ordered spot sources attempted.
-  - `eligible_options` (int): Echo of eligible option count.
-  - `total_options` (int): Echo of total option count.
-  - `confidence` (string): Echo of top-level confidence.
-  - `status_reason` (string): Reason code for the quality `status`.
-  - `filters` (object): Parameterization used:
-    - `max_dte_days` (int)
-    - `min_open_interest` (int)
-    - `min_volume` (int)
-    - `walls_top_n` (int)
-    - `gex_slope_range_pct` (float)
-  - `filter_stats` (object): Counts of filtered contracts:
-    - `total`, `expired`, `dte_exceeded`, `missing_gamma`, `low_open_interest`, `low_volume`, `other`
-  - `contracts_total` (int): Alias of `filter_stats.total`.
-  - `contracts_used` (int): Number of option contracts that fed dealer math.
-  - `diagnostics` (list[string]): Guardrail and failure annotations (e.g., `missing_spot_price`, `no_eligible_options`, `all_contracts_filtered`, `spot_resolution_failed`, `no_options_before_snapshot`).
+#### FULL
 
-Null / missing values reflect upstream data insufficiency, guardrail blocks, or ineligible contract sets; they are persisted as `null` rather than omitted.
+A dealer metrics payload is `FULL` if **all** of the following are true:
 
-## Status & Confidence Semantics
-- `status` is derived post-computation:
-  - **FULL**: `eligible_options >= 25`, `gex_total` and `gex_net` present and non-zero magnitude, `position != "unknown"`, `confidence` in (`high`, `medium`).
-  - **LIMITED**: `eligible_options >= 1`, `gex_total` and `gex_net` present and non-zero magnitude, `position` in (`long_gamma`, `short_gamma`, `neutral`), `confidence` in (`medium`, `invalid`).
-  - **INVALID**: Any of `eligible_options == 0`, missing `gex_total` or `gex_net`, spot missing/failed, diagnostics containing `all_contracts_filtered` or `no_options_available`, or other unmet criteria.
-- `confidence` comes directly from dealer math and is not altered by the taxonomy; combine with `status` to decide downstream usability.
-- `diagnostics` and `filter_stats` explain why contracts were rejected or why metrics are absent; `no_eligible_options` indicates filters removed all contracts despite options being present.
+* `eligible_options_count >= 25`
+* `gex_total` and `gex_net` are present
+* `abs(gex_total) > 0`
+* `position != "unknown"`
+* `confidence ∈ {"high", "medium"}`
 
-## Determinism & Provenance
-- `snapshot_time`: Options heartbeat time driving the run (or user-provided).
-- `effective_options_time`: Per-ticker resolved options snapshot (max `options_chains.time <= snapshot_time`); prevents empty results when ingestion is intraday.
-- `effective_trading_date`: OHLCV-aligned trading date (latest market close on/before snapshot); anchors DTE and spot fallback.
-- `spot_source` / `spot_resolution_strategy` / `spot_attempted_sources`: Track how spot was resolved to avoid silent fallbacks and to audit failures.
+**Interpretation**
+High-quality, statistically meaningful dealer signal. Safe to use for:
 
-**Wall Filte Assumption**
-Below is a sanity-check of ±20% moneyness as the default wall-filter in the context of Wyckoff analysis + dealer gamma mechanics, followed by a clear recommendation.
+* Wyckoff overlays
+* Scoring and ranking
+* Regime context and alerts
 
-⸻
+---
 
-Executive Answer
+#### LIMITED
 
-Yes — ±20% is a defensible and reasonable default, but it should be treated as a configurable ceiling, not a universal truth.
+A dealer metrics payload is `LIMITED` if **all** of the following are true:
 
-For your current use case (daily / swing Wyckoff with dealer metrics as context, not scalping signals):
-	•	±20% = correct default
-	•	±15% = often “cleaner” for high-liquidity megacaps
-	•	±25–30% = sometimes required for high-volatility / small-cap names
+* `eligible_options_count >= 1`
+* `eligible_options_count < 25`
+* `gex_total` and `gex_net` are present
+* `abs(gex_total) > 0`
+* `position ∈ {"long_gamma","short_gamma","neutral"}`
+* `confidence ∈ {"medium","invalid"}`
 
-Your instinct to make this CLI-tunable is exactly right.
+**Interpretation**
+Dealer math succeeded, but the sample size is thin.
+Use only as **weak context**; do **not** allow to dominate Wyckoff or ranking decisions.
 
-⸻
+Typical causes:
 
-Why ±20% Works for Wyckoff Time Horizons
+* Small-cap / low-liquidity option chains
+* Narrow expiration coverage
+* Walls driven by very few contracts
 
-1. Wyckoff Is About Structure, Not Microstructure
+---
 
-Wyckoff phases (A–E) operate over:
-	•	Days → weeks → months
-	•	Not intraday pinning or expiry-day effects
+#### INVALID
 
-Dealer walls that matter for Wyckoff must:
-	•	Influence multi-day hedging behavior
-	•	Be within realistic price travel distance
+A dealer metrics payload is `INVALID` if **any** of the following apply:
 
-A ±20% band captures:
-	•	Likely support / resistance zones
-	•	Without polluting the signal with far-OTM “inventory noise”
+* `eligible_options_count == 0`
+* `eligible_options_count < 25` **and** confidence/threshold criteria not met
+* Missing or zero-magnitude `gex_total` or `gex_net`
+* Spot resolution failed
+* Diagnostics include `all_contracts_filtered` or `no_options_available`
+* Status thresholds not met (`status_reason = "criteria_not_met"`)
 
-⸻
+**Important nuance**
+`INVALID` does **not** mean computation failed.
 
-2. Dealer Hedging Reality (Key Point)
+Dealer math may have executed successfully, walls and GEX may be present, and `processing_status` may be `SUCCESS` — but the result is **not statistically reliable**.
 
-Dealers dynamically hedge gamma near spot, not far OTM.
+**Interpretation**
+Do not use for:
 
-As moneyness increases:
-	•	Gamma collapses rapidly
-	•	Hedging urgency drops
-	•	Deep OTM GEX becomes latent, not active
+* Wyckoff confirmation
+* Ranking or scoring
+* Trade recommendations
 
-Empirically:
-	•	20% OTM strikes rarely influence next 1–3 weeks of price action
-	•	They can matter in crashes or squeezes, but not as day-to-day walls
+May still be inspected manually for exploratory analysis.
 
-So ±20% acts as a gamma-relevance boundary, not an arbitrary cutoff.
+---
 
-⸻
+### `metadata.status` (Non-Authoritative)
 
-3. Cross-Ticker Practicality
+`metadata.status` is derived from a **separate heuristic** (lower thresholds, different intent) and exists for:
 
-Ticker Type	Typical Daily Move	±20% Horizon Represents
-AAPL / MSFT	1–3%	~6–10 weeks
-NVDA	3–6%	~3–6 weeks
-PLTR / SOUN	5–10%	~1–3 weeks
-Small caps	8–15%	~days–weeks
+* Debugging
+* Operator inspection
+* Pipeline observability
 
-This lines up well with:
-	•	Your A3 snapshot cadence
-	•	Dealer metrics being recomputed daily
-	•	Wyckoff phase transitions being observed over weeks
+It may disagree with the top-level `status`.
 
-⸻
+**Rule:**
+If `status != metadata.status`, **the top-level `status` always wins**.
 
-When ±20% Is Too Wide or Too Narrow
+---
 
-Too Wide When:
-	•	Mega-caps with tight volatility (AAPL, MSFT)
-	•	You see far-OTM strikes repeatedly dominating walls
-	•	Walls appear “far away” and untradeable
+## Why FULL Metadata Can Still Be INVALID (Critical Insight)
 
-Solution: tighten to ±15%
+The AEVA example demonstrates a key design decision:
 
-⸻
+* Dealer math succeeded
+* Spot was resolved
+* GEX, walls, and gamma flip were computed
+* Confidence is `high`
 
-Too Narrow When:
-	•	High-beta / speculative names
-	•	Event-driven volatility
-	•	You see no walls at all after filtering
+Yet:
 
-Solution: widen to ±25% or ±30%
+* Only **18 eligible contracts**
+* Below the `FULL` minimum threshold
+* `status_reason = "criteria_not_met"`
 
-⸻
+Result:
 
-Recommended Default Strategy (Strongly Suggested)
+* `metadata.status = FULL`
+* **top-level `status = INVALID`**
 
-1. Keep ±20% as the Default
+This is intentional and correct.
 
-It is:
-	•	Conservative
-	•	Explainable
-	•	Matches institutional behavior
-	•	Safe for most symbols
+The top-level status encodes **statistical sufficiency**, not mathematical success.
 
-2. Make It Explicit and Visible
+---
 
-This is important for trust and debuggability.
+## Sample Dealer Metrics JSON (LIMITED / INVALID)
 
-Example metadata already fits your design well:
+The following are **canonical, real-world examples** and should be used for documentation, fixtures, and validation.
 
-"wall_config": {
-  "max_moneyness_pct": 0.20,
-  "walls_top_n": 5,
-  "max_dte_days": 45,
-  "min_open_interest": 100
+---
+
+### INVALID Example — AEVA (Thin Market, Criteria Not Met)
+
+```json
+{
+  "status": "INVALID",
+  "status_reason": "criteria_not_met",
+  "eligible_options_count": 18,
+  "total_options_count": 184,
+  "confidence": "high",
+  "position": "neutral",
+  "gex_total": 194395.38,
+  "gex_net": -162843.81,
+  "gamma_flip": 13.16,
+  "dgpi": -52.12,
+  "spot_price": 14.29,
+  "spot_price_source": "ohlcv",
+  "processing_status": "SUCCESS",
+  "metadata": {
+    "symbol": "AEVA",
+    "eligible_options": 18,
+    "contracts_used": 18,
+    "status": "FULL",
+    "status_reason": "criteria_not_met"
+  }
 }
+```
 
-3. Add CLI Override (You Already Identified This Correctly)
+**Why INVALID**
 
-Example:
+* Dealer math succeeded
+* Confidence is high
+* But **eligible option count < FULL threshold**
+* Signal is not statistically robust
 
-python -m scripts.run_a3_dealer_metrics \
-  --snapshot-time 2025-12-22T23:59:59+00:00 \
-  --wall-max-moneyness 0.15
+---
 
-This enables:
-	•	Per-experiment tuning
-	•	Backtesting sensitivity
-	•	Future automation (symbol-specific defaults)
+### LIMITED Example — CXM (Low Liquidity, Thin but Usable)
 
-⸻
+```json
+{
+  "status": "LIMITED",
+  "status_reason": "limited_thresholds_met",
+  "eligible_options_count": 8,
+  "total_options_count": 80,
+  "confidence": "medium",
+  "position": "neutral",
+  "gex_total": 47576.0,
+  "gex_net": -46164.16,
+  "gamma_flip": 5.08,
+  "dgpi": -46.64,
+  "spot_price": 7.84,
+  "spot_price_source": "ohlcv",
+  "processing_status": "SUCCESS",
+  "metadata": {
+    "symbol": "CXM",
+    "eligible_options": 8,
+    "contracts_used": 8,
+    "status": "LIMITED",
+    "status_reason": "limited_thresholds_met"
+  }
+}
+```
 
-Important: Do NOT Over-Optimize Early
+**Why LIMITED**
 
-Claude’s suggestions are directionally correct, but order matters.
+* Dealer math succeeded
+* Non-zero GEX
+* Confidence is medium
+* Sample size is small but non-zero
 
-Correct implementation order for A3.1:
-	1.	✅ Moneyness filter (±20%) ← MUST
-	2.	✅ Persist walls + primaries
-	3.	✅ Determinism + tests
-	4.	➕ Proximity weighting (later)
-	5.	➕ Density normalization (only if needed)
-	6.	➕ Time-decay weighting (optional)
+Use only as **contextual signal**, never primary.
 
-You are right to start simple and structural.
+---
 
-⸻
+## Downstream Consumption Rules (Updated)
 
-Bottom Line
-	•	±20% is the right default for your Wyckoff + dealer context
-	•	It matches dealer hedging reality
-	•	It avoids false walls
-	•	It is neither too aggressive nor too lax
-	•	Making it CLI-configurable is architecturally correct
+When integrating dealer metrics into Wyckoff (A8.*):
+
+1. **Gate on top-level `status`**
+
+   * `FULL` → normal weight
+   * `LIMITED` → reduced weight
+   * `INVALID` → ignore
+
+2. Never infer usability from:
+
+   * `processing_status`
+   * `metadata.status`
+   * Presence of walls or gamma flip alone
+
+3. Treat `eligible_options_count` as a **first-class reliability indicator**
+
+---
+
+## Documentation Invariant (Recommended)
+
+Add this invariant to prevent future drift:
+
+> Any change to:
+>
+> * dealer thresholds
+> * status rules
+> * filter defaults
+> * wall construction
+>
+> MUST update `dealer_metrics.md` in the same PR.
+
+---
 
 If you want, next we can:
-	•	Tune symbol-class defaults (mega-cap vs small-cap)
-	•	Or wire this directly into the A3.1 single-file story with explicit acceptance criteria.
+
+* Add a **truth table** mapping `eligible_options × confidence → status`
+* Add **SQL assertions** that detect status/metadata disagreement
+* Generate a **pytest fixture** directly from AEVA and CXM for regression tests

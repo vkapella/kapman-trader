@@ -2,29 +2,53 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import psycopg2
 from psycopg2.extras import Json
 
 from core.metrics.volatility_metrics import (
+    DEFAULT_MIN_HISTORY_POINTS,
     OptionContractVol,
-    calculate_average_iv,
-    calculate_iv_rank,
-    calculate_iv_skew,
-    calculate_iv_term_structure,
-    calculate_oi_ratio,
-    calculate_put_call_ratio,
+    VolatilityMetricsCounts,
+    VOLATILITY_METRIC_KEYS,
+    compute_volatility_metrics,
 )
 
 DEFAULT_HISTORY_LOOKBACK = 252
-DEFAULT_MIN_IV_HISTORY = 20
 DEFAULT_HEARTBEAT_TICKERS = 50
 
 logger = logging.getLogger("kapman.a4")
+
+
+def _git_revision() -> str:
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        sha_bytes = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=repo_root, stderr=subprocess.DEVNULL
+        )
+        return sha_bytes.decode().strip()
+    except Exception:
+        return "unknown"
+
+
+def _resolve_model_version() -> str:
+    override = os.getenv("KAPMAN_A4_MODEL_VERSION")
+    if override:
+        return override
+    sha = _git_revision()
+    return f"a4-volatility-metrics@{sha}"
+
+
+MODEL_VERSION = _resolve_model_version()
+EMPTY_METRICS_TEMPLATE = {key: None for key in VOLATILITY_METRIC_KEYS}
+EMPTY_COUNTS = VolatilityMetricsCounts.from_contracts([])
 
 
 def _json_dumps_strict(value: Any) -> str:
@@ -71,7 +95,7 @@ def _resolve_options_snapshot_time(conn, ticker_id: str, snapshot_time: datetime
     return ts
 
 
-def _fetch_watchlist_tickers(conn) -> list[Tuple[str, str]]:
+def _fetch_watchlist_tickers(conn) -> list[tuple[str, str]]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -118,7 +142,6 @@ def _fetch_watchlist_tickers_missing_snapshot(conn, snapshot_time: datetime) -> 
                   SELECT 1 FROM daily_snapshots s
                   WHERE s.time = %s AND s.ticker_id = t.id
               )
-            ORDER BY UPPER(t.symbol), t.id::text
             """,
             (snapshot_time,),
         )
@@ -204,7 +227,7 @@ def _load_average_iv_history(
         metrics = payload.get("metrics")
         if not isinstance(metrics, dict):
             continue
-        average_iv = metrics.get("average_iv")
+        average_iv = metrics.get("average_iv") or metrics.get("avg_iv")
         if average_iv is None:
             continue
         try:
@@ -222,53 +245,104 @@ def _timestamp_to_iso(ts: Optional[datetime]) -> Optional[str]:
     return ts.isoformat()
 
 
-def _build_metrics_payload(
+def _build_volatility_payload(
     *,
-    average_iv: Optional[float],
-    iv_rank: Optional[float],
-    put_call_ratio: Optional[float],
-    oi_ratio: Optional[float],
-    iv_skew: Optional[float],
-    iv_term: Optional[float],
+    ticker_id: str,
+    ticker_symbol: str,
+    snapshot_date: date,
     options_snapshot_time: Optional[datetime],
-) -> Tuple[Dict[str, Any], str]:
-    metrics = {
-        "average_iv": average_iv,
-        "iv_rank": iv_rank,
-        "put_call_ratio_oi": put_call_ratio,
-        "oi_ratio": oi_ratio,
-        "iv_skew": iv_skew,
-        "iv_term_structure": iv_term,
-    }
-    if options_snapshot_time is None:
-        status = "missing_options_data"
-    elif any(value is None for value in metrics.values()):
-        status = "partial_metrics"
-    else:
-        status = "ok"
-    payload = {
-        "status": status,
+    metrics: Dict[str, Optional[float]],
+    counts: VolatilityMetricsCounts,
+    processing_status: str,
+    confidence: str,
+    diagnostics: list[str],
+) -> Dict[str, Any]:
+    return {
+        "processing_status": processing_status,
+        "confidence": confidence,
+        "diagnostics": diagnostics,
         "options_snapshot_time": _timestamp_to_iso(options_snapshot_time),
         "metrics": metrics,
+        "metadata": {
+            "ticker_id": ticker_id,
+            "symbol": ticker_symbol,
+            "snapshot_date": snapshot_date.isoformat(),
+            "effective_options_time": _timestamp_to_iso(options_snapshot_time),
+            "counts": counts.to_dict(),
+            "processing_status": processing_status,
+        },
     }
-    return payload, status
+
+
+def _determine_processing_status(
+    *,
+    metrics: Dict[str, Optional[float]],
+    contracts: Sequence[OptionContractVol],
+    options_snapshot_time: Optional[datetime],
+    history_points: int,
+) -> Tuple[str, list[str]]:
+    diagnostics: list[str] = []
+    if options_snapshot_time is None or not contracts:
+        diagnostics.append("missing_options_data")
+        return "MISSING_OPTIONS", diagnostics
+
+    if metrics.get("avg_iv") is None:
+        diagnostics.append("missing_average_iv")
+        if "partial_metrics" not in diagnostics:
+            diagnostics.append("partial_metrics")
+        return "PARTIAL", diagnostics
+
+    if history_points < DEFAULT_MIN_HISTORY_POINTS:
+        diagnostics.append("insufficient_iv_history")
+
+    return "SUCCESS", diagnostics
+
+
+def _determine_confidence(
+    counts: VolatilityMetricsCounts, processing_status: str
+) -> str:
+    normalized = processing_status.upper()
+    if normalized != "SUCCESS":
+        return "low"
+    if (
+        counts.contracts_with_iv >= 40
+        and counts.front_month_contracts >= 5
+        and counts.back_month_contracts >= 5
+    ):
+        return "high"
+    if counts.contracts_with_iv >= 20:
+        return "medium"
+    return "low"
 
 
 def _upsert_volatility_metrics_json(
-    conn, *, snapshot_time: datetime, ticker_id: str, metrics_json: Dict[str, Any]
+    conn, *, snapshot_time: datetime, ticker_id: str, metrics_json: Dict[str, Any], model_version: str
 ) -> None:
+    _json_dumps_strict(metrics_json)
+    now = datetime.now(timezone.utc)
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO daily_snapshots (time, ticker_id, volatility_metrics_json)
-            VALUES (%s, %s, %s)
+            INSERT INTO daily_snapshots (
+              time,
+              ticker_id,
+              volatility_metrics_json,
+              model_version,
+              created_at
+            )
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (time, ticker_id)
-            DO UPDATE SET volatility_metrics_json = EXCLUDED.volatility_metrics_json
+            DO UPDATE SET
+              volatility_metrics_json = EXCLUDED.volatility_metrics_json,
+              model_version = EXCLUDED.model_version,
+              created_at = EXCLUDED.created_at
             """,
             (
                 snapshot_time,
                 ticker_id,
                 Json(metrics_json, dumps=_json_dumps_strict),
+                model_version,
+                now,
             ),
         )
     conn.commit()
@@ -314,16 +388,14 @@ def run_volatility_metrics_job(
     verbose: bool = False,
     debug: bool = False,
     log: Optional[logging.Logger] = None,
+    model_version: Optional[str] = None,
 ) -> A4BatchStats:
     log = log or logger
     snapshot_dates = sorted(snapshot_dates)
     if not snapshot_dates:
         return A4BatchStats(dates=[], total_tickers=0)
 
-    stats = A4BatchStats(
-        dates=[d.isoformat() for d in snapshot_dates],
-        total_tickers=0,
-    )
+    stats = A4BatchStats(dates=[d.isoformat() for d in snapshot_dates], total_tickers=0)
     stats.start_time = time.monotonic()
     _log_missing_watchlist_symbols(conn, log)
     watchlist = _fetch_watchlist_tickers(conn)
@@ -343,9 +415,7 @@ def run_volatility_metrics_job(
 
     stats.total_tickers = sum(len(ids) for ids in ticker_plan.values())
     date_desc = _describe_date_range(snapshot_dates)
-    flags_desc = (
-        f"debug={debug} verbose={verbose} heartbeat={heartbeat_every} fill_missing={fill_missing}"
-    )
+    flags_desc = f"debug={debug} verbose={verbose} heartbeat={heartbeat_every} fill_missing={fill_missing}"
     log.info(
         "[A4] START date=%s tickers=%s flags=%s",
         date_desc,
@@ -353,6 +423,8 @@ def run_volatility_metrics_job(
         flags_desc,
         extra={"a4_summary": True, "a4_stats": stats.to_log_extra()},
     )
+
+    effective_model_version = model_version or MODEL_VERSION
 
     for snapshot_date in snapshot_dates:
         snapshot_time = _snapshot_time_utc(snapshot_date)
@@ -368,28 +440,25 @@ def run_volatility_metrics_job(
                     options_snapshot_time=options_snapshot_time,
                     snapshot_time=snapshot_time,
                 )
-                average_iv = calculate_average_iv(contracts)
-                iv_rank = calculate_iv_rank(
-                    average_iv,
-                    _load_average_iv_history(conn, ticker_id=ticker_id, snapshot_time=snapshot_time),
-                    min_history_points=DEFAULT_MIN_IV_HISTORY,
+                history = _load_average_iv_history(conn, ticker_id=ticker_id, snapshot_time=snapshot_time)
+                history_points = len(history)
+
+                metrics, counts = compute_volatility_metrics(
+                    contracts=contracts,
+                    history=history,
+                    min_history_points=DEFAULT_MIN_HISTORY_POINTS,
                 )
-                put_call_ratio = calculate_put_call_ratio(contracts)
-                oi_ratio = calculate_oi_ratio(contracts)
-                iv_skew = calculate_iv_skew(contracts)
-                iv_term = calculate_iv_term_structure(contracts)
-                payload, status = _build_metrics_payload(
-                    average_iv=average_iv,
-                    iv_rank=iv_rank,
-                    put_call_ratio=put_call_ratio,
-                    oi_ratio=oi_ratio,
-                    iv_skew=iv_skew,
-                    iv_term=iv_term,
+
+                processing_status, diagnostics = _determine_processing_status(
+                    metrics=metrics,
+                    contracts=contracts,
                     options_snapshot_time=options_snapshot_time,
+                    history_points=history_points,
                 )
-                if status == "ok":
+
+                if processing_status == "SUCCESS":
                     stats.success += 1
-                elif status == "missing_options_data":
+                elif processing_status == "MISSING_OPTIONS":
                     stats.missing_options += 1
                     log.info(
                         "[A4] missing options snapshot for %s at %s",
@@ -397,25 +466,37 @@ def run_volatility_metrics_job(
                         snapshot_time.isoformat(),
                         extra={"a4_expected_gap": True},
                     )
-                elif status == "partial_metrics":
+                elif processing_status == "PARTIAL":
                     stats.partial_metrics += 1
                     log.info(
                         "[A4] partial volatility metrics for %s; some values null",
                         ticker_symbol,
                         extra={"a4_expected_gap": True},
                     )
-                if average_iv is not None and iv_rank is None:
+                confidence = _determine_confidence(counts, processing_status)
+                payload = _build_volatility_payload(
+                    ticker_id=ticker_id,
+                    ticker_symbol=ticker_symbol,
+                    snapshot_date=snapshot_date,
+                    options_snapshot_time=options_snapshot_time,
+                    metrics=metrics,
+                    counts=counts,
+                    processing_status=processing_status,
+                    confidence=confidence,
+                    diagnostics=diagnostics,
+                )
+                if contracts and history_points < DEFAULT_MIN_HISTORY_POINTS:
                     log.info(
                         "[A4] insufficient iv history for %s (need %s points)",
                         ticker_symbol,
-                        DEFAULT_MIN_IV_HISTORY,
+                        DEFAULT_MIN_HISTORY_POINTS,
                         extra={"a4_expected_gap": True},
                     )
                 if verbose:
                     log.info(
                         "[A4] ticker=%s status=%s options_snapshot=%s",
                         ticker_symbol,
-                        status,
+                        processing_status,
                         _timestamp_to_iso(options_snapshot_time),
                     )
                 if debug and options_snapshot_time is not None and contracts:
@@ -427,18 +508,20 @@ def run_volatility_metrics_job(
                     )
             except Exception as exc:
                 stats.errors += 1
-                payload = {
-                    "status": "error",
-                    "options_snapshot_time": _timestamp_to_iso(None),
-                    "metrics": {
-                        "average_iv": None,
-                        "iv_rank": None,
-                        "put_call_ratio_oi": None,
-                        "oi_ratio": None,
-                        "iv_skew": None,
-                        "iv_term_structure": None,
-                    },
-                }
+                processing_status = "ERROR"
+                diagnostics = ["exception"]
+                confidence = "low"
+                payload = _build_volatility_payload(
+                    ticker_id=ticker_id,
+                    ticker_symbol=ticker_symbol,
+                    snapshot_date=snapshot_date,
+                    options_snapshot_time=None,
+                    metrics=EMPTY_METRICS_TEMPLATE.copy(),
+                    counts=EMPTY_COUNTS,
+                    processing_status=processing_status,
+                    confidence=confidence,
+                    diagnostics=diagnostics,
+                )
                 log.warning(
                     "[A4] unexpected failure for %s: %s",
                     ticker_symbol,
@@ -446,10 +529,11 @@ def run_volatility_metrics_job(
                     exc_info=True,
                 )
             _upsert_volatility_metrics_json(
-                conn,
+                conn=conn,
                 snapshot_time=snapshot_time,
                 ticker_id=ticker_id,
                 metrics_json=payload,
+                model_version=effective_model_version,
             )
             if _should_emit_heartbeat(stats.processed, heartbeat_every):
                 log.info(
