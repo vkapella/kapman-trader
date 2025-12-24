@@ -1,0 +1,121 @@
+Proceeding to the final phase.
+Story: A4 — Volatility metrics computation & persistence
+Roadmap Ref: S-MET-02
+Depends on: A0, A1, A2, A3, A5/A6
+Delivers: Deterministic volatility context in daily_snapshots
+
+Metrics Persisted (authoritative list):
+	•	avg_iv
+	•	avg_call_iv
+	•	avg_put_iv
+	•	iv_stddev
+	•	iv_skew_call_put
+	•	put_call_oi_ratio
+	•	put_call_volume_ratio
+	•	iv_percentile
+	•	iv_rank
+	•	front_month_iv
+	•	back_month_iv
+	•	iv_term_structure_slope
+
+Plus metadata, diagnostics, confidence, model_version.
+
+⸻
+
+2️⃣ Implementation Checklist (Do Not Deviate)
+
+2.1 Script Entrypoint
+	•	Create scripts/run_a4_volatility_metrics.py
+	•	Match CLI flags exactly as defined in Phase 3
+	•	Date resolution logic identical to A2
+	•	Watchlist resolution logic identical to A2/A3
+
+⸻
+
+2.2 Metric Invocation
+	•	Import and call kapman.metrics.volatility_metrics
+	•	Do not reimplement any metric logic
+	•	Pass in:
+	•	eligible options DataFrame
+	•	historical avg_iv series
+	•	Capture:
+	•	metrics dict
+	•	counts
+	•	diagnostics
+
+⸻
+
+2.3 Defaults & Versioning
+	•	Define defaults block in code (not CLI)
+	•	Set model_version = a4-volatility-metrics@<sha>
+	•	Persist model_version on every upsert
+
+⸻
+
+2.4 Persistence
+	•	Upsert into daily_snapshots
+	•	Write only:
+	•	volatility_metrics_json
+	•	model_version
+	•	created_at
+	•	Respect --fill-missing
+	•	Idempotent behavior verified
+
+⸻
+
+2.5 Status, Confidence, Diagnostics
+	•	Set processing_status
+	•	Compute deterministic confidence
+	•	Populate diagnostics array on all non-SUCCESS paths
+
+⸻
+
+3️⃣ Test Checklist (Must Match Phase 5)
+
+Unit Tests
+	•	All metric families tested in isolation
+	•	Edge cases covered (no calls, no puts, flat history)
+	•	No DB or I/O usage
+
+Integration Tests
+	•	Writes JSON correctly
+	•	Idempotent on re-run
+	•	Failure paths persisted
+	•	model_version present
+
+⸻
+
+4️⃣ PR Review Checklist (For You / Reviewers)
+
+Before merging:
+	•	No new CLI flags added
+	•	No metric logic duplicated outside volatility_metrics.py
+	•	JSON contract matches Phase 2 exactly
+	•	Test names reflect intent
+	•	Logging mirrors A2/A3
+	•	Deterministic rebuild (A5) passes end-to-end
+
+⸻
+
+5️⃣ Explicit Non-Goals (Documented)
+
+These are intentionally not part of A4:
+	•	No IV surface modeling
+	•	No skew by delta or strike buckets
+	•	No volatility forecasting
+	•	No trading signal generation
+	•	No intraday recomputation
+
+These belong to future stories.
+
+⸻
+
+6️⃣ Story Closure Criteria
+
+You may close [A4] when:
+
+✔ All acceptance criteria are met
+✔ Tests pass locally and in CI
+✔ Deterministic rebuild includes A4 without special casing
+✔ No downstream consumer requires changes
+

@@ -35,7 +35,7 @@ echo $DATABASE_URL
 echo $POLYGON_API_KEY
 ⸻
 
-Step 0 — Stop and Destroy the Database (Pave)
+*  Step 0 — Stop and Destroy the Database (Pave)
 This removes all persisted state, including schema and data.
 
 docker compose stop db
@@ -44,7 +44,7 @@ docker volume rm kapman-trader_pgdata
 
 ⸻
 
-Step 1 — Recreate Empty Database Container
+* Step 1 — Recreate Empty Database Container
 This starts Postgres with zero user tables.
 
 docker compose up -d db
@@ -52,12 +52,13 @@ docker compose ps
 
 ⸻
 
-Step 2 — Apply A6/A5 Schema Baseline (Schema Only)
-A6 is responsible for creating tables, types, hypertables, and policies. No data.
+* Step 2 — Apply A6/A5 Schema Baseline (Schema Only)
+
+**A6 is responsible for creating tables, types, hypertables, and policies. No data.**
 
 python -m scripts.db.a5_deterministic_rebuild
 
-SQL Verification (Schema + Timescale presence):
+**SQL Verification (Schema + Timescale presence)**:
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT extname, extversion FROM pg_extension WHERE extname IN ('timescaledb','uuid-ossp') ORDER BY extname;"
 
@@ -65,14 +66,14 @@ docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT table_schema, tabl
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT hypertable_schema, hypertable_name, num_chunks, compression_enabled FROM timescaledb_information.hypertables WHERE hypertable_schema = 'public' AND hypertable_name IN ('ohlcv','options_chains') ORDER BY hypertable_name;"      
 
-Confirm dimensions (time column + chunk interval):
+**Confirm dimensions (time column + chunk interval)**:
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT hypertable_name, column_name, dimension_type, time_interval FROM timescaledb_information.dimensions WHERE hypertable_schema = 'public' AND hypertable_name IN ('ohlcv','options_chains')ORDER BY hypertable_name, dimension_number;"
 
 
 2) Correct SQL to verify TimescaleDB compression & retention
 
-A) Verify extensions are installed (COPY-PASTE SAFE)
+**Verify extensions are installed (COPY-PASTE SAFE)**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "
 
@@ -82,7 +83,7 @@ WHERE extname IN ('timescaledb', 'uuid-ossp')
 ORDER BY extname;
 "
 
-B) Verify hypertables exist (ohlcv + options_chains)
+**Verify hypertables exist (ohlcv + options_chains)**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "
 
@@ -103,7 +104,7 @@ Expected:
 	•	ohlcv depends on whether you enabled compression
 
 
-C) Verify retention policies (this is the authoritative source)
+**Verify retention policies (this is the authoritative source)**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "
 
@@ -125,7 +126,7 @@ Expected:
 	•	One row for options_chains
 	•	drop_after = 730 days
 
-D) Verify compression policies (this replaces your broken query)
+**Verify compression policies (this replaces your broken query)**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "
 
@@ -149,7 +150,7 @@ Expected:
 	•	compress_after = 120 days
 
 
-Confirm "forbidden” compatibility table/view does not exist:
+**Confirm "forbidden” compatibility table/view does not exist:**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "
 SELECT table_schema, table_name
@@ -167,18 +168,18 @@ Expected outcome after Step 2:
 
 ⸻
 
-Step 3 — Load Canonical Ticker Universe (Tickers Only)
+* Step 3 — Load Canonical Ticker Universe (Tickers Only)
 This establishes the symbol → ticker_id mapping required for OHLCV and options_chains.
 
 python -m scripts.ingest_tickers --force
 
-Verify tickers populated:
+**Verify tickers populated:**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "
 SELECT COUNT(*) AS ticker_count FROM public.tickers;
 "
 
-Verify watchlist symbols resolve to ticker_id (no missing mappings):
+**Verify watchlist symbols resolve to ticker_id (no missing mappings):**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "
 SELECT w.symbol
@@ -193,31 +194,34 @@ LIMIT 50;
 Expected: 0 rows returned (or explicitly understood exceptions if your ticker ingestor filters certain assets).
 
 ⸻
-Step 4 — Persist MVP Watchlists (Data Seeding Only)
+* Step 4 — Persist MVP Watchlists (Data Seeding Only)
 This seeds the authoritative symbol scopes used by options ingestion and analytics.
 
 python -m scripts.ingest_watchlists
 
-Verify watchlists populated:
+**Verify watchlists populated:**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT watchlist_id, COUNT(*) AS total, COUNT(*) FILTER (WHERE active) AS active FROM public.watchlists GROUP BY watchlist_id ORDER BY watchlist_id;"
 
-Verify active symbols > 0:
+**Verify active symbols > 0:**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT COUNT(*) AS active_symbols FROM public.watchlists WHERE active = true;"
 
 Expected: 1rows = number of symbols in watchlist 
 
 ⸻
-
-Step 5 — Base OHLCV Hydration from S3 (Data Only)
+* Step 5 — Base OHLCV Hydration from S3 (Data Only)
 This performs full deterministic backfill into public.ohlcv.
 
 python -m scripts.ingest_ohlcv base
 
-Verify OHLCV rows and date coverage:
+**Add single day - need to fix the incremental script**
 
-Verify retention is configured (already checked in Step 2), and that ohlcv is a hypertable:
+python -m scripts.ingest_ohlcv base --days 1 --as-of 2025-12-23 --verbosity normal
+
+**Verify OHLCV rows and date coverage:**
+
+**Verify retention is configured (already checked in Step 2), and that ohlcv is a hypertable:**
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT COUNT(*) AS ohlcv_rows FROM public.ohlcv;"
 
@@ -225,19 +229,22 @@ docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT MIN(date) AS min_d
 
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT hypertable_schema, hypertable_name, num_chunks, compression_enabled FROM timescaledb_information.hypertables WHERE hypertable_schema='public' AND hypertable_name='ohlcv';"
 
+**run the ohlcv dashboard to verify**
+docker exec -i kapman-db psql -U kapman -d kapman -v ON_ERROR_STOP=1 -v DAYS_BACK=30 -v SYMBOL_LIMIT=25 < docs/runbooks/0000-A0-ohlcv_dashboard.sql
 
-docker exec -i kapman-db psql -U kapman -d kapman -v ON_ERROR_STOP=1 -v DAYS_BACK=30 -v SYMBOL_LIMIT=25 < docs/runbooks/ohlcv_dashboard.sql
 
+
+**run the ohlcv dashboard to verify**
 ⸻
 
-Step 6 — Options Chains Snapshot Hydration (Snapshot-Based into options_chains)
+* Step 6 — Options Chains Snapshot Hydration (Snapshot-Based into options_chains)
 This ingests option snapshots for all active watchlist symbols into public.options_chains.
 
 python -m scripts.ingest_options
 
 **run the options dashboard to verify**
 
-docker exec -i kapman-db psql -U kapman -d kapman -v  ON_ERROR_STOP=1 <docs/runbooks/options_chains_dashboard.sql
+docker exec -i kapman-db psql -U kapman -d kapman -v  ON_ERROR_STOP=1 <docs/runbooks/0001-A1-options_chains_dashboard.sql
 
 **run the options dashboard to verify**
 
@@ -364,9 +371,10 @@ ORDER BY table_name;
 
 ⸻
 
-Step 7 — Run Local TA + Price Metrics
+* Step 7 — Run Local TA + Price Metrics
 
 python -m scripts.run_a2_local_ta --date 2025-12-05  --workers 6 --ticker-chunk-size 500  
+
 
 docker exec -it kapman-db psql -U kapman -d kapman
 
@@ -380,7 +388,7 @@ SELECT
   DATE(time) AS snapshot_date,
   COUNT(*)   AS total_rows
 FROM daily_snapshots
-WHERE time >= '2025-12-15'
+WHERE time >= '2025-11-01'
   AND time <  '2025-12-20'
 GROUP BY DATE(time)
 ORDER BY snapshot_date;
@@ -390,8 +398,8 @@ SELECT
   COUNT(*)   AS rows_with_ta
 FROM daily_snapshots
 WHERE technical_indicators_json IS NOT NULL
-  AND time >= '2025-12-15'
-  AND time <  '2025-12-20'
+  AND time >= '2025-11-01'
+  AND time <  '2025-12-23'
 GROUP BY DATE(time)
 ORDER BY snapshot_date;
 
@@ -400,8 +408,8 @@ SELECT
   COUNT(*)   AS rows_with_price_metrics
 FROM daily_snapshots
 WHERE price_metrics_json IS NOT NULL
-  AND time >= '2025-12-15'
-  AND time <  '2025-12-20'
+  AND time >= '2025-11-01'
+  AND time <  '2025-12-23'
 GROUP BY DATE(time)
 ORDER BY snapshot_date;
 
@@ -453,8 +461,7 @@ LIMIT 1;
 
 SELECT ticker_id, jsonb_pretty(technical_indicators_json) FROM daily_snapshots WHERE ticker_id = 'NVDA' ORDER BY time DESC LIMIT 1;
 
-
-Step 8 — Run Dealer Metrics
+* Step 8 — Run Dealer Metrics
 
 docker exec -it kapman-db psql -U kapman -d kapman
 
@@ -462,15 +469,35 @@ python -m scripts.run_a3_dealer_metrics --start-date 2025-12-15 --end-date 2025-
 
 **dealer-dashboard to check the success of dealer metrics calculation**
 
-docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < docs/runbooks/dealer_metrics_dashboard.sql
+docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < docs/runbooks/0003-A3-dealer_metrics_dashboard.sql
 
 **dealer-dashboard to check the success of dealer metrics calculation** 
+
+---
+* Step 9 — Run Volatility Metrics 
+
+
+**volatility-dashboard to check the success of volatility metrics calculation**
+
+ docker exec -i kapman-db psql -U kapman -d kapman < docs/runbooks/0004-A4-volatility_metrics_dashboard.sql
+
+**volatility-dashboard to check the success of volatility metrics calculation**
+
+
+
+
 
 Step 9 — Optional: Full Integration Test Sweep (Schema + Invariants + A6.1 Coverage)
 Use your integration tests to validate deterministic rebuild and A6.1 guarantees.
 
 pytest -q tests/integration/test_a5_deterministic_database_rebuild.py
 pytest -q tests/integration/test_a6_1_options_chains_timescaledb.py
+
+
+
+
+
+
 
 ⸻
 

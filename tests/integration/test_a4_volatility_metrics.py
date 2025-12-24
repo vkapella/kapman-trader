@@ -10,7 +10,7 @@ import pytest
 from psycopg2.extras import Json
 
 from core.db.a6_migrations import default_migrations_dir, reset_and_migrate
-from core.metrics.a4_volatility_metrics_job import run_volatility_metrics_job
+from core.metrics.a4_volatility_metrics_job import MODEL_VERSION, run_volatility_metrics_job
 from core.metrics.volatility_metrics import calculate_iv_rank
 
 
@@ -151,11 +151,11 @@ def test_a4_volatility_metrics_batch_behavior(caplog) -> None:
 
     snapshot_date = date(2025, 12, 5)
     snapshot_time = _snapshot_time_for_date(snapshot_date)
-    symbols = ["AAPL", "MSFT"]
+    symbols = ["AAPL", "MSFT", "GOOG"]
+    missing_symbol = "GOOG"
     history_values = [0.18 + i * 0.005 for i in range(25)]
     expected_iv_rank = calculate_iv_rank(0.2494, history_values)
 
-    # Specific option chains for the late snapshot
     long_expiry = date(2026, 3, 5)
     short_expiry = date(2026, 1, 4)
     late_contracts = [
@@ -197,9 +197,9 @@ def test_a4_volatility_metrics_batch_behavior(caplog) -> None:
         },
     ]
 
-    # Insert baseline data
     with psycopg2.connect(db_url) as conn:
         ticker_ids = _seed_watchlist_and_tickers(conn, symbols, snapshot_date)
+        symbol_by_id = dict(zip(ticker_ids, symbols))
         for ticker_id in ticker_ids:
             for offset, value in enumerate(history_values, start=1):
                 prev_time = snapshot_time - timedelta(days=offset)
@@ -212,7 +212,6 @@ def test_a4_volatility_metrics_batch_behavior(caplog) -> None:
                     price_json={"price": 1},
                     dealer_json={"dealer": "persist"},
                 )
-            # Pre-create the snapshot row to test non-clobbering
             _insert_daily_snapshot(
                 conn,
                 ticker_id=ticker_id,
@@ -226,6 +225,9 @@ def test_a4_volatility_metrics_batch_behavior(caplog) -> None:
         early_snapshot = snapshot_time.replace(hour=14, minute=0, second=0, microsecond=0)
         late_snapshot = snapshot_time.replace(hour=15, minute=0, second=0, microsecond=0)
         for ticker_id in ticker_ids:
+            symbol = symbol_by_id[ticker_id]
+            if symbol == missing_symbol:
+                continue
             _seed_option_snapshot(
                 conn,
                 ticker_id=ticker_id,
@@ -262,7 +264,7 @@ def test_a4_volatility_metrics_batch_behavior(caplog) -> None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT ticker_id::text, technical_indicators_json::text, volatility_metrics_json::text
+                SELECT ticker_id::text, technical_indicators_json::text, volatility_metrics_json::text, model_version
                 FROM daily_snapshots
                 WHERE time = %s
                 ORDER BY ticker_id
@@ -273,22 +275,35 @@ def test_a4_volatility_metrics_batch_behavior(caplog) -> None:
         assert len(rows) == len(ticker_ids)
 
         metrics_by_ticker: dict[str, dict] = {}
-        for ticker_id, technical_text, volatility_text in rows:
+        for ticker_id, technical_text, volatility_text, model_version in rows:
             technical = json.loads(technical_text)
             assert technical == {"marker": "keep"}
             metrics = json.loads(volatility_text)
-            assert metrics["status"] == "ok"
-            assert metrics["options_snapshot_time"] == late_snapshot.isoformat()
-            metric_values = metrics["metrics"]
-            assert pytest.approx(0.2494, abs=1e-4) == metric_values["average_iv"]
-            assert pytest.approx(0.84, abs=1e-4) == metric_values["oi_ratio"]
-            assert pytest.approx(0.9231, abs=1e-4) == metric_values["put_call_ratio_oi"]
-            assert metric_values["iv_skew"] == 12.0
-            assert metric_values["iv_term_structure"] == 2.0
-            assert pytest.approx(expected_iv_rank, abs=1e-2) == metric_values["iv_rank"]
+            assert model_version == MODEL_VERSION
             metrics_by_ticker[ticker_id] = metrics
+            symbol = symbol_by_id[ticker_id]
+            if symbol == missing_symbol:
+                assert metrics["processing_status"] == "MISSING_OPTIONS"
+                assert metrics["confidence"] == "low"
+                assert metrics["diagnostics"] == ["missing_options_data"]
+                assert metrics["options_snapshot_time"] is None
+                assert metrics["metrics"]["avg_iv"] is None
+                assert metrics["metadata"]["counts"]["total_contracts"] == 0
+            else:
+                metric_values = metrics["metrics"]
+                assert metrics["processing_status"] == "SUCCESS"
+                assert metrics["confidence"] == "low"
+                assert metrics["diagnostics"] == []
+                assert metrics["options_snapshot_time"] == late_snapshot.isoformat()
+                assert metrics["metadata"]["symbol"] == symbol
+                counts = metrics["metadata"]["counts"]
+                assert counts["total_contracts"] == 4
+                assert pytest.approx(0.2494, abs=1e-4) == metric_values["avg_iv"]
+                assert pytest.approx(expected_iv_rank, abs=1e-2) == metric_values["iv_rank"]
+                assert pytest.approx(0.9231, abs=1e-4) == metric_values["put_call_oi_ratio"]
+                assert metrics["metadata"]["processing_status"] == "SUCCESS"
+                assert metrics["metadata"]["effective_options_time"] == late_snapshot.isoformat()
 
-        assert first_json is not None
         run_volatility_metrics_job(
             conn,
             snapshot_dates=[snapshot_date],
@@ -298,11 +313,19 @@ def test_a4_volatility_metrics_batch_behavior(caplog) -> None:
             debug=False,
             log=log,
         )
+
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT ticker_id::text, volatility_metrics_json::text FROM daily_snapshots WHERE time = %s ORDER BY ticker_id",
+                """
+                SELECT ticker_id::text, technical_indicators_json::text, volatility_metrics_json::text, model_version
+                FROM daily_snapshots
+                WHERE time = %s
+                ORDER BY ticker_id
+                """,
                 (snapshot_time,),
             )
             second_rows = cur.fetchall()
-        for ticker_id, text in second_rows:
-            assert json.loads(text) == metrics_by_ticker[ticker_id]
+        for ticker_id, technical_text, volatility_text, model_version in second_rows:
+            assert json.loads(technical_text) == {"marker": "keep"}
+            assert model_version == MODEL_VERSION
+            assert json.loads(volatility_text) == metrics_by_ticker[ticker_id]
