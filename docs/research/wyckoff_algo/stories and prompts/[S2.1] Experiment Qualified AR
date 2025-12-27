@@ -1,0 +1,219 @@
+🚀 WINDSURF CODEX PROMPT — Experiment: Qualified AR Entry
+
+You are working in an existing repository that already contains a validated Wyckoff research baseline.
+
+Your task is to implement Experiment 1: Qualified AR Entry in a way that is fully isolated from baseline logic, reproducible, and directly comparable to existing benchmark results.
+
+⚠️ CRITICAL CONSTRAINTS (NON-NEGOTIABLE)
+	•	DO NOT modify baseline detector code
+	•	DO NOT modify benchmark math
+	•	DO NOT redefine AR, SC, or SPRING
+	•	DO NOT change horizons (5 / 10 / 20 / 40)
+	•	DO NOT add new events
+	•	DO NOT look ahead in time
+	•	DO NOT overwrite baseline outputs
+
+This is a post-hoc experiment only.
+
+⸻
+
+CONTEXT (EXISTING ARTIFACTS)
+
+Baseline artifacts already exist and are trusted:
+
+docs/research/wyckoff_algo/outputs/
+├── events.parquet
+├── events.csv
+├── events_timeline.csv
+├── benchmark_results.parquet
+└── benchmark_results.csv
+
+OHLCV data is available via the dev Postgres database using:
+
+DATABASE_URL=postgresql://kapman:kapman123@127.0.0.1:5432/kapman
+
+Watchlist is fixed at:
+
+docs/research/wyckoff_algo/data/watchlist_105.txt
+
+
+⸻
+
+OBJECTIVE
+
+Create an isolated experiment that surfaces higher-quality AR entry signals by qualifying AR events with prior Wyckoff structure and a basic volatility regime check, without changing detection logic.
+
+The experiment must produce:
+	•	A filtered event stream
+	•	A benchmark result that can be compared 1:1 with baseline
+
+⸻
+
+EXPERIMENT DEFINITION — Qualified AR Entry
+
+An AR event is kept only if all conditions below are true:
+
+Structural Qualification
+	•	The AR is preceded by either:
+	•	SC, or
+	•	SPRING
+	•	Occurring within the prior N bars
+	•	Default: N = 20
+
+Volatility Qualification
+	•	At the AR bar:
+	•	ATR percentile ≥ 50th percentile
+	•	(ATR computed from OHLCV, rolling window acceptable)
+
+Trade Interpretation
+	•	Direction remains UP
+	•	Role remains ENTRY
+	•	Entry timing remains at the AR bar
+
+No other events are emitted.
+
+⸻
+
+REQUIRED FILES TO CREATE
+
+Create a new experiment folder:
+
+docs/research/wyckoff_algo/experiments/exp_qualified_ar/
+├── run.py
+├── filter.py
+├── config.yaml
+└── README.md
+
+
+⸻
+
+FILE RESPONSIBILITIES
+
+⸻
+
+config.yaml
+
+Must define:
+
+experiment_id: exp_qualified_ar_v1
+
+lookback_bars: 20
+atr_lookback: 14
+atr_percentile_min: 50
+
+source_events: ../../outputs/events.parquet
+watchlist: ../../data/watchlist_105.txt
+
+No hard-coded constants elsewhere.
+
+⸻
+
+filter.py
+
+Implement:
+
+def apply_experiment(
+    events_df: pd.DataFrame,
+    ohlcv_by_symbol: dict[str, pd.DataFrame],
+    config: dict
+) -> pd.DataFrame:
+    """
+    Returns a filtered subset of events_df.
+    Only AR events that satisfy:
+      - prior SC or SPRING within lookback window
+      - ATR percentile >= threshold
+    """
+
+Rules:
+	•	Input is baseline events.parquet
+	•	Output rows are a subset of AR rows only
+	•	No new timestamps
+	•	No mutation of baseline data
+	•	Must preserve:
+	•	symbol
+	•	event
+	•	direction
+	•	role
+	•	event_date
+	•	bar_index
+	•	Add column:
+	•	experiment_id
+
+⸻
+
+run.py
+
+Responsibilities:
+	1.	Load baseline events from events.parquet
+	2.	Load OHLCV via the existing dev DB loader
+	3.	Apply apply_experiment
+	4.	Write outputs:
+
+docs/research/wyckoff_algo/outputs/exp_qualified_ar/
+├── events.parquet
+├── events.csv
+
+CSV must be human-inspectable and sorted by:
+
+symbol, event_date
+
+
+⸻
+
+README.md
+
+Briefly document:
+	•	What Qualified AR Entry means
+	•	Why it exists
+	•	How it differs from baseline
+	•	How to run it
+
+No theory essay — concise and factual.
+
+⸻
+
+BENCHMARKING (REUSE, DO NOT MODIFY)
+
+After experiment output is written:
+	•	Reuse the existing benchmark runner
+	•	Point it at:
+
+outputs/exp_qualified_ar/events.parquet
+
+
+	•	Produce:
+
+outputs/exp_qualified_ar/benchmark_results.parquet
+outputs/exp_qualified_ar/benchmark_results.csv
+
+Benchmark math and horizons must be unchanged.
+
+⸻
+
+ACCEPTANCE CRITERIA (ALL REQUIRED)
+	•	Baseline detector untouched
+	•	Baseline events.parquet unchanged
+	•	Qualified AR produces fewer signals than baseline AR
+	•	MAE improves vs baseline AR
+	•	Mean return is equal or better at 20 / 40 bars
+	•	Outputs are deterministic
+	•	Results can be directly diffed against baseline
+
+⸻
+
+DEFINITION OF DONE
+
+This experiment is complete when:
+
+A filtered AR-only event stream has been produced, benchmarked, and shown to improve reliability (MAE) without sacrificing structural integrity or baseline comparability.
+
+⸻
+
+FINAL INSTRUCTION
+
+Do not generalize, refactor, or “optimize.”
+This experiment exists to learn, not to impress.
+
+Proceed carefully and conservatively.
+
+⸻

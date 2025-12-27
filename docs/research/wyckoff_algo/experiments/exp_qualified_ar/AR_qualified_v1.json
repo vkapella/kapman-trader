@@ -1,0 +1,50 @@
+{
+  "signal_id": "AR_QUALIFIED_V1",
+  "family": "WYCKOFF",
+  "source_event": "AR",
+
+  "intent": "high_confidence_structural_confirmation",
+  "description": "Automatic Reaction signal qualified by prior SC or SPRING and a volatility regime filter to reduce false confirmations.",
+
+  "direction": "UP",
+  "role": "ENTRY",
+
+  "primary_horizon": 40,
+  "secondary_horizons": [20],
+
+  "qualifiers": {
+    "requires_prior_event": ["SC", "SPRING"],
+    "prior_event_lookback_bars": 20,
+    "volatility_filter": {
+      "type": "ATR_PERCENTILE",
+      "min_percentile": 50
+    }
+  },
+
+  "expected_behavior": {
+    "edge_profile": "late-cycle structural confirmation",
+    "risk_profile": "lower MAE than baseline AR",
+    "frequency": "medium-low",
+    "strengths": [
+      "improved adverse excursion control",
+      "stronger long-horizon performance",
+      "higher confidence regime confirmation"
+    ],
+    "weaknesses": [
+      "reduced signal count",
+      "slower payoff profile at mid horizons"
+    ]
+  },
+
+  "benchmark_expectations": {
+    "mean_return_40d": "greater_than_or_equal_to_baseline_AR",
+    "mean_return_20d": "may_be_lower_than_baseline_AR",
+    "mae_improvement": "required_vs_baseline_AR",
+    "minimum_signal_count": 30
+  },
+
+  "promotion_status": "EXPERIMENTAL",
+  "version": 1,
+  "owner": "wyckoff_research",
+  "notes": "Specialized confirmation signal intended for position-duration trades. Designed to trade frequency for improved risk characteristics."
+}
