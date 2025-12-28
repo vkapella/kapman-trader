@@ -1,0 +1,11 @@
+{
+  "signal_id": "SOS_BASELINE_V1",
+  "experiment_id": "exp_sos_baseline_v1",
+  "event": "SOS",
+  "direction": "UP",
+  "role": "ENTRY",
+  "sequence_required": false,
+  "description": "Baseline Sign of Strength (SOS) entry with no sequencing or qualification",
+  "primary_horizon": 20,
+  "status": "EXPERIMENTAL"
+}

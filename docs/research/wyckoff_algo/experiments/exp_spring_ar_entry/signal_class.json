@@ -1,0 +1,16 @@
+{
+  "signal_id": "SPRING_AR_ENTRY_V1",
+  "family": "WYCKOFF",
+  "source_event": "AR",
+  "intent": "early_structural_confirmation",
+  "description": "AR entry signal confirmed by prior SPRING within a short window",
+  "primary_horizon": 20,
+  "secondary_horizons": [40],
+  "expected_behavior": {
+    "mean_return_20": ">= baseline AR",
+    "mae": "<= qualified AR",
+    "frequency": "< baseline AR"
+  },
+  "promotion_status": "EXPERIMENTAL",
+  "version": 1
+}

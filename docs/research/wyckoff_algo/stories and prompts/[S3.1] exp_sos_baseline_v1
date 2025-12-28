@@ -1,0 +1,198 @@
+Below is a single, self-contained Windsurf / Codex prompt you can copy-paste verbatim. It tells the tool to create all required files for exp_sos_baseline_v1, aligned with your now-working baseline architecture and without drifting any existing code.
+
+⸻
+
+Windsurf / Codex Prompt — Create exp_sos_baseline_v1
+
+PROMPT START
+
+You are working in the repository:
+
+docs/research/wyckoff_algo/
+
+I want to create a new experiment named:
+
+exp_sos_baseline_v1
+
+This experiment tests SOS events in isolation (event-only, no sequencing) and must be fully comparable to existing experiments such as exp_baseline_ar_v1.
+
+⸻
+
+1. Directory to create
+
+Create the following directory structure:
+
+docs/research/wyckoff_algo/experiments/exp_sos_baseline_v1/
+├── run.py
+├── filter.py
+├── config.yaml
+├── signal_class.json
+└── README.md
+
+Do NOT modify any other directories or files.
+
+⸻
+
+2. Architectural rules (must follow exactly)
+
+Use experiments/baseline/run.py as the canonical reference for structure and wiring.
+
+The new run.py must:
+	1.	Contain all executable logic inside main()
+	2.	Read experiment_id from config.yaml
+	3.	Load raw events from:
+
+../../outputs/raw/events.parquet
+
+
+	4.	Load OHLCV via:
+
+ohlcv_by_symbol = load_ohlcv()
+
+(NO arguments)
+
+	5.	Apply:
+
+apply_experiment(events_df, ohlcv_by_symbol, cfg)
+
+
+	6.	Write outputs to:
+
+docs/research/wyckoff_algo/outputs/exp_sos_baseline_v1/
+
+
+	7.	Include experiment_id in all output filenames
+	8.	Run the benchmark using the existing benchmark harness
+	9.	Write both parquet and CSV outputs
+	10.	Contain no top-level executable code outside main() and
+
+if __name__ == "__main__":
+    main()
+
+
+
+No refactors, no abstractions, no shared-code changes.
+
+⸻
+
+3. Experiment behavior (this is the key logic)
+
+This is an EVENT-ONLY experiment.
+
+The filter must:
+	•	Select all SOS events from raw/events.parquet
+	•	Ignore all other events
+	•	Perform no sequencing
+	•	Perform no qualification
+	•	Perform no invalidation
+
+This is the baseline SOS behavior, analogous to baseline AR.
+
+⸻
+
+4. File-by-file requirements
+
+config.yaml
+
+Create with the following content:
+
+experiment_id: exp_sos_baseline_v1
+
+source_events: ../../outputs/raw/events.parquet
+watchlist: ../../data/watchlist_105.txt
+
+
+⸻
+
+filter.py
+
+Implement:
+
+def apply_experiment(events_df, ohlcv_by_symbol, cfg):
+    """
+    Baseline SOS experiment:
+    - Return all SOS events
+    - No filtering, no sequencing
+    """
+
+Behavior:
+	•	Filter events_df to rows where event == "SOS"
+	•	Return a DataFrame with the same schema as input
+	•	Do NOT use ohlcv_by_symbol (but keep it in the signature)
+
+⸻
+
+run.py
+	•	Clone the structure of experiments/baseline/run.py
+	•	Change only:
+	•	OUTPUT_DIR name
+	•	Logging strings (to reflect SOS baseline)
+	•	Ensure filenames include experiment_id
+
+⸻
+
+signal_class.json
+
+Create a formal signal definition:
+
+{
+  "signal_id": "SOS_BASELINE_V1",
+  "experiment_id": "exp_sos_baseline_v1",
+  "event": "SOS",
+  "direction": "UP",
+  "role": "ENTRY",
+  "sequence_required": false,
+  "description": "Baseline Sign of Strength (SOS) entry with no sequencing or qualification",
+  "primary_horizon": 20,
+  "status": "EXPERIMENTAL"
+}
+
+
+⸻
+
+README.md
+
+Include a short explanation covering:
+	•	What SOS represents in Wyckoff
+	•	That this experiment is event-only
+	•	That it exists to compare against:
+	•	AR
+	•	Qualified AR
+	•	AR → SOS sequence
+	•	That this experiment should not be used as a trading signal without sequencing
+
+Keep it concise (5–8 bullet points).
+
+⸻
+
+5. Explicit constraints
+	•	Do NOT modify:
+	•	baseline/run.py
+	•	raw outputs
+	•	benchmark code
+	•	loader code
+	•	Do NOT add new dependencies
+	•	Do NOT invent new metrics
+
+This is a mechanical, controlled experiment, not a creative rewrite.
+
+⸻
+
+6. Expected result after implementation
+
+Running:
+
+python docs/research/wyckoff_algo/experiments/exp_sos_baseline_v1/run.py
+
+Should produce:
+
+outputs/exp_sos_baseline_v1/
+├── events_exp_sos_baseline_v1.parquet
+├── events_exp_sos_baseline_v1.csv
+├── benchmark_results_exp_sos_baseline_v1.parquet
+└── benchmark_results_exp_sos_baseline_v1.csv
+
+
+⸻
+
+PROMPT END

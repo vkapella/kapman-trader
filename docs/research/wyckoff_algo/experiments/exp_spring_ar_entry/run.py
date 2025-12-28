@@ -29,7 +29,7 @@ from filter import apply_experiment
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
-OUTPUT_DIR = Path(__file__).resolve().parents[2] / "outputs" / "exp_qualified_ar"
+OUTPUT_DIR = Path(__file__).resolve().parents[2] / "outputs" / "exp_spring_ar_entry"
 
 
 def _load_config(path: Path = CONFIG_PATH) -> dict:
@@ -43,22 +43,23 @@ def main() -> None:
     experiment_id = cfg.get("experiment_id", "unknown_experiment")
 
     source_events_path = (Path(__file__).resolve().parent / cfg["source_events"]).resolve()
-    logger.info("Loading baseline events from %s", source_events_path)
+    logger.info("Loading raw events from %s", source_events_path)
     events_df = pd.read_parquet(source_events_path)
 
     logger.info("Loading OHLCV from dev DB via existing loader.")
     ohlcv_by_symbol = load_ohlcv()
 
-    logger.info("Applying Qualified AR experiment filter.")
+    logger.info("Applying SPRING -> AR Entry experiment filter.")
     filtered = apply_experiment(events_df, ohlcv_by_symbol, cfg)
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     events_out_parquet = OUTPUT_DIR / f"events_{experiment_id}.parquet"
     events_out_csv = OUTPUT_DIR / f"events_{experiment_id}.csv"
     filtered.to_parquet(events_out_parquet, index=False)
     filtered.sort_values(["symbol", "event_date"]).to_csv(events_out_csv, index=False)
-    logger.info("Wrote %s qualified events to %s (csv=%s)", len(filtered), events_out_parquet, events_out_csv)
+    logger.info("Wrote %s events to %s (csv=%s)", len(filtered), events_out_parquet, events_out_csv)
 
-    logger.info("Running benchmark on qualified events.")
+    logger.info("Running benchmark on experiment output.")
     bench_parquet = OUTPUT_DIR / f"benchmark_results_{experiment_id}.parquet"
     bench_csv = OUTPUT_DIR / f"benchmark_results_{experiment_id}.csv"
     run_bench(events_path=events_out_parquet, output_path=bench_parquet)
