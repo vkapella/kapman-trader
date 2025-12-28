@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterable, List, Sequence
 
 import pandas as pd
 import sqlalchemy as sa
@@ -50,16 +50,33 @@ def _lookup_date_bounds(engine: sa.Engine) -> tuple[datetime, datetime]:
     return start_ts.to_pydatetime(), end_ts.to_pydatetime()
 
 
-def load_ohlcv() -> Dict[str, pd.DataFrame]:
+def load_ohlcv(
+    symbols: Sequence[str] | None = None,
+    *,
+    engine: sa.Engine | None = None,
+    watchlist_path: Path | None = None,
+    start_ts: datetime | None = None,
+    end_ts: datetime | None = None,
+    min_days: int | None = None,
+) -> Dict[str, pd.DataFrame]:
     """
-    Load daily OHLCV for the research watchlist directly from Postgres.
+    Load daily OHLCV for the requested symbols (or watchlist) directly from Postgres.
 
     Returns:
         dict[symbol, DataFrame] with ascending dates and no caching.
     """
-    symbols = _read_watchlist()
-    engine = _make_engine()
-    start_ts, end_ts = _lookup_date_bounds(engine)
+    engine = engine or _make_engine()
+    wl_path = watchlist_path or WATCHLIST_PATH
+    if symbols is None:
+        symbols = _read_watchlist(wl_path)
+    symbols = [s.upper() for s in symbols]
+    if not symbols:
+        logger.warning("No symbols provided to load_ohlcv.")
+        return {}
+
+    start_ts, end_ts = (
+        _lookup_date_bounds(engine) if start_ts is None or end_ts is None else (start_ts, end_ts)
+    )
 
     query = (
         sa.text(
@@ -98,6 +115,8 @@ def load_ohlcv() -> Dict[str, pd.DataFrame]:
 
     ohlcv_map: Dict[str, pd.DataFrame] = {}
     for sym, df_sym in df.groupby("symbol"):
+        if min_days is not None and len(df_sym) < min_days:
+            continue
         df_sym = df_sym.reset_index(drop=True)
         ohlcv_map[sym] = df_sym
         min_dt = df_sym["time"].min()
@@ -110,8 +129,8 @@ def load_ohlcv() -> Dict[str, pd.DataFrame]:
             max_dt.date() if isinstance(max_dt, pd.Timestamp) else max_dt,
         )
 
-    logger.info("Loaded OHLCV for %s symbols (watchlist target=%s).", len(ohlcv_map), len(symbols))
+    logger.info("Loaded OHLCV for %s symbols (requested=%s).", len(ohlcv_map), len(symbols))
     return ohlcv_map
 
 
-__all__ = ["load_ohlcv"]
+__all__ = ["load_ohlcv", "_make_engine", "_lookup_date_bounds", "_read_watchlist"]

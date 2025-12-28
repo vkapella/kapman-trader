@@ -38,30 +38,54 @@ def _load_config(path: Path = CONFIG_PATH) -> dict:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+    )
+    
     cfg = _load_config()
+    experiment_id = cfg.get("experiment_id", "unknown_experiment")
 
     source_events_path = (Path(__file__).resolve().parent / cfg["source_events"]).resolve()
     logger.info("Loading baseline events from %s", source_events_path)
     events_df = pd.read_parquet(source_events_path)
 
-    logger.info("Loading OHLCV from dev DB via existing loader.")
+    logger.info("Loading OHLCV data.")
     ohlcv_by_symbol = load_ohlcv()
 
-    logger.info("Applying Qualified AR experiment filter.")
+    logger.info("Applying %s experiment filter.", experiment_id)
     filtered = apply_experiment(events_df, ohlcv_by_symbol, cfg)
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    events_out_parquet = OUTPUT_DIR / "events.parquet"
-    events_out_csv = OUTPUT_DIR / "events.csv"
+
+    events_out_parquet = OUTPUT_DIR / f"events_{experiment_id}.parquet"
+    events_out_csv = OUTPUT_DIR / f"events_{experiment_id}.csv"
+
     filtered.to_parquet(events_out_parquet, index=False)
     filtered.sort_values(["symbol", "event_date"]).to_csv(events_out_csv, index=False)
-    logger.info("Wrote %s qualified events to %s (csv=%s)", len(filtered), events_out_parquet, events_out_csv)
 
-    logger.info("Running benchmark on qualified events.")
-    bench_parquet = OUTPUT_DIR / "benchmark_results.parquet"
+    logger.info(
+        "Wrote %s events to %s (csv=%s)",
+        len(filtered),
+        events_out_parquet,
+        events_out_csv,
+    )
+
+    logger.info("Running benchmark for %s.", experiment_id)
+
+    bench_parquet = OUTPUT_DIR / f"benchmark_results_{experiment_id}.parquet"
+    bench_csv = OUTPUT_DIR / f"benchmark_results_{experiment_id}.csv"
+
     run_bench(events_path=events_out_parquet, output_path=bench_parquet)
-    logger.info("Benchmark complete for experiment output.")
 
+    # Optional: if run_bench already writes CSV, skip this
+    if bench_parquet.exists():
+        pd.read_parquet(bench_parquet).to_csv(bench_csv, index=False)
+
+    logger.info(
+        "Benchmark complete for %s (parquet=%s, csv=%s).",
+        experiment_id,
+        bench_parquet,
+        bench_csv,
+    )
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,4 @@
+experiment_id: exp_sos_baseline_v1
+
+source_events: ../../outputs/raw/events.parquet
+watchlist: ../../data/watchlist_105.txt

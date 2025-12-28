@@ -1,0 +1,236 @@
+Below is a single, copy-pasteable Windsurf / Codex prompt to generate all files for the sequence-based experiment:
+
+exp_ar_to_sos_entry_v1
+
+This prompt is deliberately mechanical and aligned to your working baseline so it does not introduce drift.
+
+⸻
+
+Windsurf / Codex Prompt — Create exp_ar_to_sos_entry_v1
+
+PROMPT START
+
+You are working in the repository:
+
+docs/research/wyckoff_algo/
+
+I want to create a new experiment named:
+
+exp_ar_to_sos_entry_v1
+
+This experiment tests SOS entries conditioned on a prior AR event (sequence-based Wyckoff logic).
+
+⸻
+
+1. Directory to create
+
+Create the following directory structure:
+
+docs/research/wyckoff_algo/experiments/exp_ar_to_sos_entry_v1/
+├── run.py
+├── filter.py
+├── config.yaml
+├── signal_class.json
+└── README.md
+
+Do NOT modify any existing files or experiments.
+
+⸻
+
+2. Architectural rules (must match baseline exactly)
+
+Use experiments/baseline/run.py as the canonical reference.
+
+The new run.py must:
+	1.	Put all executable logic inside main()
+	2.	Read experiment_id from config.yaml
+	3.	Load raw events from:
+
+../../outputs/raw/events.parquet
+
+
+	4.	Load OHLCV using:
+
+ohlcv_by_symbol = load_ohlcv()
+
+(NO arguments)
+
+	5.	Apply:
+
+apply_experiment(events_df, ohlcv_by_symbol, cfg)
+
+
+	6.	Write outputs to:
+
+docs/research/wyckoff_algo/outputs/exp_ar_to_sos_entry_v1/
+
+
+	7.	Include experiment_id in all output filenames
+	8.	Run the existing benchmark harness unchanged
+	9.	Write both parquet and CSV outputs
+	10.	Contain no top-level code outside imports, function defs, and:
+
+if __name__ == "__main__":
+    main()
+
+
+
+No refactors, no shared-code changes, no abstractions.
+
+⸻
+
+3. Experiment behavior (core logic)
+
+This is a SEQUENCE-BASED experiment.
+
+The experiment emits SOS events, but only if preceded by AR under a strict rule.
+
+⸻
+
+4. Sequence rule (must implement exactly)
+
+An SOS event is valid if and only if:
+	1.	There exists an AR event for the same symbol such that:
+
+0 < (SOS.bar_index - AR.bar_index) ≤ ar_to_sos_max_bars
+
+
+	2.	The AR used must be the most recent AR prior to the SOS within the window.
+	3.	If use_bc_invalidator is true:
+	•	Reject the SOS if any BC occurs such that:
+
+AR.bar_index < BC.bar_index ≤ SOS.bar_index
+
+
+	4.	The emitted event is the SOS (not the AR).
+
+No other conditions, no ATR filters, no trend filters.
+
+⸻
+
+5. File-by-file requirements
+
+config.yaml
+
+Create exactly:
+
+experiment_id: exp_ar_to_sos_entry_v1
+
+source_events: ../../outputs/raw/events.parquet
+watchlist: ../../data/watchlist_105.txt
+
+ar_to_sos_max_bars: 40
+use_bc_invalidator: true
+
+
+⸻
+
+filter.py
+
+Implement:
+
+def apply_experiment(events_df, ohlcv_by_symbol, cfg):
+    """
+    AR → SOS sequence experiment.
+
+    Emit SOS events only if preceded by an AR within N bars.
+    Optionally invalidate if BC occurs between AR and SOS.
+    """
+
+Implementation requirements:
+	•	Group events by symbol
+	•	Sort by bar_index (preferred) or event_date
+	•	For each SOS:
+	•	Find the most recent AR within ar_to_sos_max_bars
+	•	If none → reject
+	•	If use_bc_invalidator is true:
+	•	Reject if BC exists between AR and SOS
+	•	If accepted:
+	•	Emit the SOS row
+	•	Add metadata columns:
+	•	matched_ar_bar_index
+	•	matched_ar_date
+	•	bars_since_ar
+	•	Return a DataFrame with original columns plus metadata
+
+Do NOT modify event labels, direction, or role.
+
+⸻
+
+run.py
+	•	Clone structure from experiments/baseline/run.py
+	•	Change only:
+	•	OUTPUT_DIR
+	•	Logging strings (reference “AR → SOS experiment”)
+	•	Filenames must include experiment_id
+
+⸻
+
+signal_class.json
+
+Create:
+
+{
+  "signal_id": "AR_TO_SOS_ENTRY_V1",
+  "experiment_id": "exp_ar_to_sos_entry_v1",
+  "trigger_event": "SOS",
+  "requires_prior_event": "AR",
+  "direction": "UP",
+  "role": "ENTRY",
+  "window_bars": 40,
+  "invalidated_by": ["BC"],
+  "primary_horizon": 20,
+  "sequence_required": true,
+  "status": "EXPERIMENTAL",
+  "description": "Sign of Strength (SOS) entry conditioned on a prior Automatic Rally (AR) within a fixed lookback window."
+}
+
+
+⸻
+
+README.md
+
+Include a concise explanation covering:
+	•	Wyckoff rationale for AR → SOS
+	•	That this is a sequence-conditioned entry
+	•	Comparison targets:
+	•	SOS baseline
+	•	AR baseline
+	•	Why BC invalidation is used
+	•	That this is a candidate primary long entry
+
+Keep it short (5–8 bullets).
+
+⸻
+
+6. Explicit constraints
+	•	Do NOT modify:
+	•	raw event detection
+	•	baseline experiments
+	•	benchmark math
+	•	loader code
+	•	Do NOT introduce new metrics or dependencies
+	•	Keep the implementation deterministic
+
+⸻
+
+7. Expected result after implementation
+
+Running:
+
+python docs/research/wyckoff_algo/experiments/exp_ar_to_sos_entry_v1/run.py
+
+Should produce:
+
+outputs/exp_ar_to_sos_entry_v1/
+├── events_exp_ar_to_sos_entry_v1.parquet
+├── events_exp_ar_to_sos_entry_v1.csv
+├── benchmark_results_exp_ar_to_sos_entry_v1.parquet
+└── benchmark_results_exp_ar_to_sos_entry_v1.csv
+
+
+⸻
+
+PROMPT END
+
+⸻
