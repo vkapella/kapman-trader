@@ -1,0 +1,5 @@
+run_id_: raw_universe_v1
+universe: all           # set to "all" for DB-driven universe; otherwise uses watchlist
+watchlist: ../../data/watchlist_105.txt
+batch_size: 250
+min_days: 252
