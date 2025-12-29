@@ -1,0 +1,8 @@
+experiment_id: exp_baseline_ar_universe_v1
+
+lookback_bars: 20
+atr_lookback: 14
+atr_percentile_min: 50
+
+source_events: ../../outputs/raw_universe_v1/events.parquet
+watchlist: ../../data/watchlist_all.txt
