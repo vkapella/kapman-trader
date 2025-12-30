@@ -1,8 +1,0 @@
-experiment_id: exp_baseline_ar_v1
-
-lookback_bars: 20
-atr_lookback: 14
-atr_percentile_min: 50
-
-source_events: ../../outputs/raw/events.parquet
-watchlist: ../../data/watchlist_105.txt

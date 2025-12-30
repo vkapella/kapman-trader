@@ -180,3 +180,8 @@ optional arguments:
   --debug                             #DEBUG-level per-metric detail (implies --verbose)
   --quiet                             #Only warnings + summaries
   --heartbeat HEARTBEAT               #Heartbeat every N tickers (default: 50)  
+
+
+## Utility to Produce Parquet of OHLCV for Wyckoff_fast_bench testing
+
+python -m scripts.export.export_ohlcv_to_fast_bench_parquet 

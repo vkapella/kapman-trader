@@ -5,3 +5,4 @@
 	3.	A2 — price + TA metrics
 	4.	A3 — dealer metrics
 	5.	A4 — volatility metrics	
+	6. 	B1 - Wyckoff Processing
