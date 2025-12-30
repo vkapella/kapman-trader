@@ -1,5 +1,9 @@
 ## KapMan MVP Roadmap
 
+Status Note (as of Jan 2026):
+This roadmap reflects the original MVP execution plan. Several sections (notably Section 2 and Slice A of Section 4) are now substantially complete in implementation, even where individual FR coverage statuses have not yet been updated. This document is maintained to track remaining work, not to re-litigate completed scope.
+
+
 ## Purpose
 
 This document defines the **delivery roadmap for the KapMan MVP**, grounded in
@@ -18,6 +22,8 @@ This document is **not architectural authority** and may evolve independently.
 ## 1. Requirements Traceability Matrix (RTM)
 
 ### 1.1 Functional Requirements Coverage
+
+**Status Note:** January 2026: FR coverage statuses reflect the MVP reboot baseline. Several FRs are now fully implemented in code but not yet re-audited in this table.
 
 | FR ID | Requirement | Coverage Status | Notes |
 |------|-------------|----------------|------|
@@ -42,6 +48,8 @@ This document is **not architectural authority** and may evolve independently.
 ---
 
 ## 2. Metric Scope & Schema Policy (Resolved)
+
+**Status Note:** January 2026 Metric scope and schema commitments in this section are complete and in force, with the sole remaining implementation work being Wyckoff metrics (Section 4, Slice B).
 
 ### 2.1 MVP Metric Commitment (Authoritative)
 
@@ -70,6 +78,10 @@ For MVP, the system **must compute and persist** the following metrics:
 - Put/Call ratio (OI-based)
 
 **Wyckoff**
+
+Wyckoff Role in kapman-trader MVP
+Wyckoff analytics in KapMan provide structural market context, not trade signals. The Wyckoff pipeline is responsible for detecting and persisting market regime, event structure, and confidence metadata derived from price–volume behavior. These outputs are consumed by downstream layers (options selection, sizing, alerts, evaluation) but do not encode entry, exit, or expression logic.
+
 - Phase (A–E) + confidence
 - 8 critical events
 - BC / Spring scores
@@ -104,12 +116,21 @@ No schema changes are required to support this.
 
 ---
 
-## 3. Canonical Gap Stories (MVP Completion Set)
+## 3. Canonical Gap Stories (Original Plan: see status notes)
+
+**Status Note:** 
+
+January 2026: Many stories listed below have been fully or partially implemented since this roadmap was drafted. Stories without an explicit “COMPLETE” annotation should be treated as remaining gaps; completed stories are retained for traceability.
 
 This is the **minimum set of stories** required to close all FR gaps.
 Every roadmap story MUST reference one or more GitHub issue IDs in its title or description.
 
 ### Data & Metrics
+
+**Status Note:** 
+
+January 2026: COMPLETE (superseded by implemented ingestion + metric pipelines)
+
 - **S-INF-00** - Deterministic database rebuild and baseline validation → *Issue ID: A5*
 - **S-INF-01** - Wipe DB and establish MVP schema baseline → *Issue ID: A6*
 - **S-DS-01** — OHLCV backfill (universe) → *Closes FR-001* → *Issue ID: A0*
@@ -120,8 +141,15 @@ Every roadmap story MUST reference one or more GitHub issue IDs in its title or 
 - **S-MET-03** — Local TA + price metric computation (RSI/MACD/SMA/EMA + RVOL/VSI/HV) → *Closes FR-003, FR-006* → *Issue ID: A2*
 
 ### Wyckoff
-- **S-WYC-01** — Persist daily Wyckoff phase + confidence → *Closes FR-007* → *Issue ID: B1*
-- **S-WYC-02** — Persist 8 Wyckoff events with benchmark assertion → *Closes FR-008* → *Issue ID: B2*
+
+**Status Note:**  
+January 2026: ACTIVE (current focus)
+
+- **S-WYC-01** — Persist Daily Wyckoff Regime State
+For each symbol and trading day, compute and persist a single Wyckoff regime classification (e.g., Accumulation, Markup, Distribution, Markdown, Unknown) along with confidence metadata. Regime assignment must be deterministic, path-dependent, and stable in the absence of regime-setting events.     → *Closes FR-007* → *Issue ID: B1*
+
+- **S-WYC-02** — Persist Canonical Wyckoff Events
+Detect and persist canonical Wyckoff structural events (SC, BC, AR, AR_TOP, SPRING, UT, SOS, SOW) with event date, type, and validation metadata. Events are sparse, path-dependent, and may only occur once per symbol per structural phase. Event detection logic must conform to the research-validated benchmark behavior.   → *Closes FR-008* → *Issue ID: B2*
 
 ### Recommendations
 - **S-AI-01** - Deterministic Claude interface & contract → *Closes FR-09* → *Issue ID: C3*
@@ -160,13 +188,25 @@ Execution is organized by blocking reality, not subsystem purity.
 - S-MET-03
 
 Outcome: `daily_snapshots` fully populated with real metrics.
+
+**Status Note:** 
+
+January 2026: COMPLETE (additional stories added opportunistically and tracked outside this roadmap in github issues)
 ---
 
-### Slice B — Wyckoff in Production
+### Slice B — Wyckoff Structural Context (ACTIVE)
+
+**Status Note:** January 2026: Research complete; production implementation in progress
+
 - S-WYC-01
 - S-WYC-02
 
 **Outcome:** Research-grade Wyckoff logic operating in daily pipeline.
+**Out of Scope for This Slice**
+- Explicit event sequence labeling (e.g., SC→AR→SPRING→SOS)
+- Regime transition scoring or prediction
+- Trade entry, exit, or sizing logic
+These capabilities are research-validated but intentionally deferred to later slices to preserve separation between structural context and decision logic.
 
 ---
 
