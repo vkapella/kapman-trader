@@ -1,8 +1,0 @@
-{
-  "SPRING": { "direction": "UP", "role": "ENTRY" },
-  "AR": { "direction": "UP", "role": "ENTRY" },
-  "SOS": { "direction": "UP", "role": "ENTRY" },
-  "BC": { "direction": "DOWN", "role": "ENTRY" },
-  "SOW": { "direction": "DOWN", "role": "ENTRY" },
-  "SC": { "direction": "CONTEXT", "role": "NONE" }
-}
