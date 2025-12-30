@@ -30,11 +30,6 @@ Process instructions belong in the Windsurf guide; system intent belongs here.
 8. [Testing Strategy](#8-testing-strategy) ← **NEW in v3.1**
 9. [Environment Strategy](#9-environment-strategy) ← **NEW in v3.1**
 10. [Implementation Roadmap](#10-implementation-roadmap)
-11. [Sprint 0.5: Initial Data Seeding](#11-sprint-05-initial-data-seeding) ← **NEW in v3.1**
-12. [Sprint 1: Infrastructure (COMPLETED)](#12-sprint-1-infrastructure-completed)
-13. [Sprint 2: Wyckoff Engine & Pipeline](#13-sprint-2-wyckoff-engine--pipeline)
-14. [Sprint 3: Recommendations & Dashboard](#14-sprint-3-recommendations--dashboard)
-15. [Sprint 4: Hardening & Environment Setup](#15-sprint-4-hardening--environment-setup) ← **REVISED in v3.1**
 16. [Configuration Reference](#16-configuration-reference)
 17. [Appendices](#17-appendices)
 
@@ -76,7 +71,7 @@ Build an automated trading decision-support system that:
 - Full OHLCV universe storage (rolling 730 trading days)
 - Options chain storage for watchlist (90-day retention)
 - 45+ metrics per snapshot (technical, dealer, volatility, price)
-- 8 critical Wyckoff events (BC, SC, AR, ST, SPRING, TEST, SOS, SOW)
+- 8 Canonical Wyckoff events (SC, BC, AR, AR_TOP, SPRING, UT, SOS, SOW) - ignore legacy references (i.e., ST/TEST which has been replaced with AR_TOP/UT) 
 - 4 option strategies (Long Call, Long Put, CSP, Vertical Spread)
 - Minimal dashboard with recommendations and alerts
 - Directional accuracy scoring (Brier)
@@ -152,26 +147,30 @@ XOM, ZM, ZS
 ## 3. SYSTEM REQUIREMENTS
 
 ### 3.1 Functional Requirements - P1 (Must Have)
+Note: Acceptance criteria define observable system outputs, not detection heuristics, thresholds, or strategy rules. Implementation details are intentionally deferred to stories.
+| ID     | Requirement                                          | Acceptance Criteria                                                                                             |
+| ------ | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| FR-001 | Daily batch job loads OHLCV for full universe        | Daily OHLCV persisted for ≥15K symbols with completeness and backfill support                                   |
+| FR-002 | Daily batch job fetches options chains for watchlist | Current option chains persisted for all watchlist symbols with strikes and expirations                          |
+| FR-003 | Technical indicators calculated for watchlist        | Defined technical indicators computed and stored daily per watchlist symbol                                     |
+| FR-004 | Dealer metrics calculated for watchlist              | Dealer positioning metrics (e.g., GEX, gamma flip context, walls) computed and stored                           |
+| FR-005 | Volatility metrics calculated for watchlist          | Volatility context metrics (IV, skew, term structure, P/C) computed and stored                                  |
+| FR-006 | Price metrics calculated for watchlist               | Relative and absolute price activity metrics (e.g., RVOL, VSI, HV) computed and stored                          |
+| FR-007 | Wyckoff structural state persisted                   | One Wyckoff regime state per symbol per day persisted, derived from structural events and price/volume context, 
+                                                                  with confidence metadata   |
+| FR-008 | Wyckoff structural events detected                   | Canonical Wyckoff events (8) detected and persisted with date, type, and validation metadata                    |
+| FR-009 | Trade recommendations generated with justification   | Recommendation artifacts persisted with strategy intent and explanatory rationale                               |
+| FR-010 | Recommendations use only real option market data     | All recommendations reference only ingested strikes and expirations; no synthetic data                          |
+| FR-011 | Portfolio CRUD operations                            | Users can create, read, update, and delete portfolios and associated tickers                                    |
+| FR-012 | Dashboard displays daily recommendations             | Daily recommendation outputs visible via authenticated web interface                                            |
+| FR-013 | Directional accuracy tracking                        | Outcome and confidence data persisted to support periodic accuracy scoring (e.g., Brier)                        |
+| FR-014 | Structural risk alerts surfaced                      | Downside exhaustion or weakness conditions surfaced as risk alerts (no execution implied)                       |
+| FR-015 | Structural opportunity alerts surfaced               | Accumulation or strength conditions surfaced as opportunity alerts (no execution implied)                       |
+| FR-016 | Automated test coverage for new code                 | New stories include automated tests covering expected behavior                                                  |
+| FR-017 | Multiple runtime environments supported              | Dev, test, and prod environments isolated with controlled promotion workflow                                    |
 
-| ID | Requirement | Acceptance Criteria |
-|----|-------------|---------------------|
-| FR-001 | Daily batch job loads OHLCV for full universe | ~15K tickers loaded from S3 |
-| FR-002 | Daily batch job fetches options chains for watchlist | All 140 watchlist tickers have current options data |
-| FR-003 | Technical indicators calculated via Polygon MCP | 84 indicators stored per watchlist ticker |
-| FR-004 | Dealer metrics calculated for watchlist | GEX, DGPI, gamma flip, walls stored |
-| FR-005 | Volatility metrics calculated for watchlist | IV skew, term structure, P/C ratio stored |
-| FR-006 | Price metrics calculated for watchlist | RVOL, VSI, HV stored |
-| FR-007 | Wyckoff phase classification for watchlist | Phase (A-E) + confidence score stored daily |
-| FR-008 | Wyckoff event detection (8 critical events) | Events detected with >70% accuracy |
-| FR-009 | Trade recommendations generated with justification | Claude generates strategy + rationale |
-| FR-010 | Recommendations use ONLY real strike/expiration data | Zero hallucinated strikes |
-| FR-011 | Portfolio CRUD operations | Create, read, update, delete portfolios and tickers |
-| FR-012 | Dashboard displays daily recommendations | Accessible via web browser |
-| FR-013 | Directional accuracy tracking | Brier score calculated weekly |
-| FR-014 | Alert on BC Score ≥ 24 | EXIT signal displayed prominently |
-| FR-015 | Alert on SPRING + SOS events | ENTRY signal displayed prominently |
-| FR-016 | Test coverage ≥ 80% for new code | All stories include test specifications |
-| FR-017 | Three environments (dev/test/prod) | Isolated databases, promotion workflow |
+Scope Clarification:
+All requirements above are part of the MVP. Status and sequencing are managed via the roadmap and stories; this table defines required capabilities, not implementation order.
 
 ### 3.2 Non-Functional Requirements
 
@@ -228,8 +227,8 @@ XOM, ZM, ZS
 │                              │                                          │
 │                              ▼                                          │
 │                ─► PHASE 4: WYCKOFF ANALYSIS (~5 min)                   │
-│                    • Phase classification (A-E)                        │
-│                    • 8 event detection + BC/Spring scoring             │
+│                    • Regime classification (Accumulation / Markup / Distribution / Markdown / Unknown) │
+│                    • 8 canonical event detection + structural context scoring
 │                    • Store to daily_snapshots (45+ columns)            │
 │                              │                                          │
 │                              ▼                                          │
@@ -241,6 +240,8 @@ XOM, ZM, ZS
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+Phase 4 Note: 
+Wyckoff emits context and scores only; no trade actions are decided here.
 ---
 
 ## 5. DATA MODEL
@@ -326,7 +327,7 @@ The watchlist is treated as **data**, not configuration.
 |----------|---------|
 | **Identity** | time, symbol |
 | **Wyckoff Phase** | wyckoff_phase, phase_score, phase_confidence |
-| **Wyckoff Events** | events_detected[], primary_event, events_json |
+| **Wyckoff Events** | events_detected[SC, BC, AR, AR_TOP, SPRING, UT, SOS, SOW], primary_event, events_json |
 | **Wyckoff Scores** | bc_score (0-28), spring_score (0-12), composite_score |
 | **Tech-Momentum** | rsi_14, macd_line, macd_signal, macd_histogram, stoch_k, stoch_d, mfi_14 |
 | **Tech-Trend** | sma_20, sma_50, sma_200, ema_12, ema_26, adx_14 |
@@ -336,6 +337,9 @@ The watchlist is treated as **data**, not configuration.
 | **Volatility** | iv_skew_25d, iv_term_structure, put_call_ratio_oi, average_iv |
 | **Price Metrics** | rvol, vsi, hv_20, hv_60, iv_hv_diff |
 | **JSONB Storage** | technical_indicators_json, dealer_metrics_json, volatility_metrics_json, price_metrics_json |
+
+Scores quantify structural context only and MUST NOT be interpreted as entry or exit signals without a downstream consumer.
+
 
 Bid/ask data is not collected.
 Spread-based logic is forbidden.
@@ -347,6 +351,21 @@ Dealer metrics must be derivable from:
 	•	DTE
 	•	spot price
 ---
+
+### Wyckoff Module Contract
+
+The Wyckoff module is responsible for:
+- Detecting canonical structural events
+- Deriving a single daily regime state
+- Emitting confidence and context scores
+
+The Wyckoff module is explicitly NOT responsible for:
+- Trade direction
+- Position sizing
+- Entry/exit timing
+- Strategy selection
+
+
 
 ## 6. SERVICE ARCHITECTURE
 
@@ -650,20 +669,27 @@ Verbose modes (DEBUG, settable via cli flag):
 ---
 ## 19. APPENDICES
 
-### 19.1 Wyckoff Events (MVP: 8)
+### 19.1 Canonical Wyckoff Structural Events (MVP)
+This table defines the canonical set of Wyckoff structural events persisted by the MVP Wyckoff pipeline.
+Detection heuristics, thresholds, and validation logic are intentionally excluded and are defined in implementation and benchmark artifacts.
+A given event type MUST NOT repeat within the same structural regime for a symbol.
 
-| Event | Code | Detection |
-|-------|------|-----------|
-| Selling Climax | SC | Volume >2x avg, wide range, close near low |
-| Automatic Rally | AR | Rally on declining volume |
-| Secondary Test | ST | Lower volume than SC, higher low |
-| Spring | SPRING | Break support, quick recovery, low volume |
-| Test of Spring | TEST | Low volume retest of spring area |
-| Sign of Strength | SOS | High volume rally, break resistance |
-| Buying Climax | BC | Volume >2x avg, wide range at highs |
-| Sign of Weakness | SOW | High volume drop, break support |
 
-### 19.2 Signal Rules
+| Event Name          | Code   | Structural Role       | Regime Association | Notes                                                       |
+| ------------------- | ------ | --------------------- | ------------------ | ----------------------------------------------------------- |
+| Selling Climax      | SC     | Downside exhaustion   | Accumulation       | Marks potential end of markdown; establishes structural low |
+| Automatic Rally     | AR     | Reflex rally          | Accumulation       | Reaction following SC; defines initial resistance           |
+| Automatic Rally Top | AR_TOP | Range ceiling         | Accumulation       | Upper bound of accumulation range                           |
+| Spring              | SPRING | False breakdown       | Accumulation       | Temporary violation of support before recovery              |
+| Upthrust            | UT     | False breakout        | Distribution       | Temporary breakout above resistance before failure          |
+| Sign of Strength    | SOS    | Upside confirmation   | Markup             | Demand dominance; breakout with follow-through              |
+| Buying Climax       | BC     | Upside exhaustion     | Distribution       | Potential end of markup; establishes structural high        |
+| Sign of Weakness    | SOW    | Downside confirmation | Markdown           | Supply dominance; breakdown with follow-through             |
+
+Implementation Note:
+Wyckoff events are sparse, path-dependent, and non-repeatable within a structural phase. Event detection is deterministic and validated against benchmark outputs but is not defined in this document.
+
+### 19.2 Candidate Alert Heuristics (Downstream Consumer Layer)
 
 ```
 ENTRY SIGNALS (🟢):
@@ -675,6 +701,7 @@ EXIT SIGNALS (🔴):
   IF BC Score ≥ 20 → PREPARE EXIT
   IF SOW detected → REDUCE POSITION
 ```
+These are consumer-layer heuristics; Wyckoff module outputs events/scores only; entry/exit rules belong to Recommendations/Alerts.
 
 ### 1   9.3 Quick Reference Commands
 
