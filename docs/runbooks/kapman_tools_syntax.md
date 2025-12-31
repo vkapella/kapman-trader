@@ -18,7 +18,6 @@ docker exec -it kapman-db psql -U kapman -d kapman
 A5 deterministic DB rebuild orchestrator (reuses A6 wipe-and-migrate).
 
 python -m scripts.db.a5_deterministic_rebuild
-
                                                                                                                  
 usage: a5_deterministic_rebuild.py [-h] [--iterations ITERATIONS] [--print-migrations]
 
@@ -42,6 +41,10 @@ optional arguments:
   --db-url DB_URL       # Overrides DATABASE_URL (default: env DATABASE_URL)
   --force               # Force re-ingest even if tickers already exist
 
+## Ingest Tickers Dashboard
+
+ocker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0002-A1.1-tickers_and_watchlists_dashboard.sql
+
 ---
 
 ## Ingest Watchlists
@@ -56,6 +59,11 @@ optional arguments:
   -h, --help            # show this help message and exit
   --db-url DB_URL       # Overrides DATABASE_URL (default: env DATABASE_URL)
   --effective-date EFFECTIVE_DATE # Effective date (YYYY-MM-DD) applied during reconciliation (default: today)
+
+
+## Ingest Watchlists Dashboard
+
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0002-A1.1-tickers_and_watchlists_dashboard.sql
 
 ---
 
@@ -79,6 +87,20 @@ optional arguments:
   -h, --help            # show this help message and exit
   --db-url DB_URL       # Overrides DATABASE_URL (default: env DATABASE_URL)
 
+base option arguments:
+  -h, --help            # show this help message and exit
+  --db-url DB_URL       # Overrides DATABASE_URL (default: env DATABASE_URL)
+  --verbosity {quiet,normal,debug} Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
+  --max-symbol-sample MAX_SYMBOL_SAMPLE #Max symbols to show when samples are printed (debug only; default: 10)
+  --symbols SYMBOLS     #Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
+  --strict-missing-symbols #Fail if flatfile contains symbols missing from tickers (default: base load skips missing symbols)
+  --no-ticker-bootstrap    #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
+  --days DAYS           #Number of available daily files to ingest (default: OHLCV_HISTORY_DAYS or 730)
+  --as-of AS_OF         #Latest date to consider (default: yesterday)
+
+## Ingest OHLCV Dashboard
+
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0000-A0-ohlcv_dashboard.sql
 
 ---
 
@@ -111,7 +133,13 @@ optional arguments:
   --emit-summary        #Emit a structured INFO summary at the end of the run
   --dry-run             #Resolve symbols and scheduling 
 
+
+
+## Ingest Options Chain Dashboard
+
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0001-A1-options_chains_dashboard.sql
 ---
+
 ## COMPUTE LOCAL TA + PRICE METRICS INTO DAILY SNAPSHOTS
 
 KapMan A2: Compute local TA + price metrics into daily_snapshots
@@ -137,7 +165,10 @@ optional arguments:
   --ticker-chunk-size TICKER_CHUNK_SIZE #Tickers per chunk (default: 500)
   --workers WORKERS                     #Worker processes (default: auto)
   --max-workers MAX_WORKERS             #Hard cap on workers (default: 6)
-                        
+
+
+
+
 ## Compute Dealer Metrics
 
 KapMan A3: Compute dealer metrics into daily_snapshots 
@@ -161,7 +192,9 @@ optional arguments:
   --spot-override SPOT_OVERRIDE         #Override spot price for all tickers (diagnostics only)
   --log-level {DEBUG,INFO,WARNING}      #Log level (default INFO)
 
+## Daily Snapshot Integrity and Coverage Dashboard
 
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0005-A2-daily_snapshot_dashboard.sql
 
 ## Compute Volatility Metrics
 
@@ -181,23 +214,40 @@ optional arguments:
   --quiet                             #Only warnings + summaries
   --heartbeat HEARTBEAT               #Heartbeat every N tickers (default: 50)  
 
-## Compute Wyckoff Events
+## Compute Wyckoff Structural Events
 
 KapMan B2: Compute Wyckoff events into daily_snapshots
 
-usage: run_b2_wyckoff_events.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat]  
+usage: run_b2_wyckoff_structural_events.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat]  
 
-python -m scripts.run_b2_wyckoff_events --heartbeat   
+python -m scripts.run_b2_wyckoff_structural_events --heartbeat  
+
+
+## ComputeWyckoff Structural Events Dashboard
+
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0008-B2-wyckoff_structural_events_dashboard.sql
 
 
 ## Compute Wyckoff Regime
 
-KapMan B1: Compute Wyckoff regime into daily_snapshots
+KapMan B1: Persist daily Wyckoff regime state into daily_snapshots
 
-usage: run_b1_wyckoff_regime.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat]  
+usage: run_b1_wyckoff_regime.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat] [--workers WORKERS] [--max-workers MAX_WORKERS]
 
-python -m scripts.run_b1_wyckoff_regime --heartbeat   
+python -m scripts.run_b1_wyckoff_regime --heartbeat  
 
+optional arguments:
+  -h, --help                        #show this help message and exit
+  --watchlist                       #Restrict to active watchlist symbols
+  --symbols SYMBOLS                 #Comma-separated symbols (e.g., AAPL,MSFT)
+  --verbose                         #Enable step-level logging
+  --heartbeat                       #Emit periodic progress logs
+  --workers WORKERS                 #Worker processes (default: auto)
+  --max-workers MAX_WORKERS         #Hard cap on workers (default: 6)    
+
+## Create Wyckoff Regime Dashboard
+
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0007-B1-wyckoff_regime_dashboard.sql
 
 ## Utility to Produce Parquet of OHLCV for Wyckoff_fast_bench testing
 
