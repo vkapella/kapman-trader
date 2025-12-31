@@ -1,5 +1,0 @@
-experiment_id: exp_spring_ar_entry_v1
-source_events: ../../outputs/raw/events.parquet
-watchlist: ../../data/watchlist_105.txt
-
-spring_to_ar_max_bars: 15
