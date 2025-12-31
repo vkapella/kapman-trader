@@ -318,6 +318,10 @@ def run_wyckoff_structural_events_job(
                 continue
 
             df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+            numeric_cols = ["open", "high", "low", "close", "volume"]
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = df[col].astype(float)
             result = structural.detect_structural_wyckoff(df, cfg=None)
             events = result.get("events", [])
             events_by_date = _group_events_by_date(events)
