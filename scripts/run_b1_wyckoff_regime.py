@@ -18,6 +18,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbols", type=str, default=None, help="Comma-separated symbols (e.g., AAPL,MSFT)")
     parser.add_argument("--verbose", action="store_true", help="Enable step-level logging")
     parser.add_argument("--heartbeat", action="store_true", help="Emit periodic progress logs")
+    parser.add_argument("--workers", type=str, default="auto", help="Worker processes (default: auto)")
+    parser.add_argument("--max-workers", type=int, default=6, help="Hard cap on workers (default: 6)")
     return parser
 
 
@@ -39,6 +41,26 @@ def _parse_symbols(value: str | None) -> list[str] | None:
     return [sym.strip().upper() for sym in value.split(",") if sym.strip()]
 
 
+def _parse_workers(value: str | None) -> int | None:
+    if value is None:
+        return None
+    if str(value).strip().lower() == "auto":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise SystemExit("--workers must be an integer or 'auto'") from exc
+    if parsed <= 0:
+        raise SystemExit("--workers must be >= 1")
+    return parsed
+
+
+def _validate_max_workers(value: int) -> int:
+    if int(value) <= 0:
+        raise SystemExit("--max-workers must be >= 1")
+    return int(value)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -49,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     log = _configure_logging(bool(args.verbose))
     symbols = _parse_symbols(args.symbols)
     heartbeat_every = DEFAULT_HEARTBEAT_TICKERS if args.heartbeat else 0
+    workers = _parse_workers(args.workers)
+    max_workers = _validate_max_workers(args.max_workers)
 
     db_url = default_db_url()
     with psycopg2.connect(db_url) as conn:
@@ -59,6 +83,8 @@ def main(argv: list[str] | None = None) -> int:
             heartbeat_every=heartbeat_every,
             verbose=bool(args.verbose),
             log=log,
+            workers=workers,
+            max_workers=max_workers,
         )
 
     return 0

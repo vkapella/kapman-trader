@@ -8,6 +8,7 @@ import pytest
 
 from core.db.a6_migrations import default_migrations_dir, reset_and_migrate
 from core.metrics.b1_wyckoff_regime_job import (
+    REGIME_ACCUMULATION,
     REGIME_MARKDOWN,
     REGIME_MARKUP,
     REGIME_UNKNOWN,
@@ -115,6 +116,32 @@ def _fetch_regimes(conn, ticker_id: str) -> dict[date, str | None]:
     return {row[0]: row[1] for row in rows}
 
 
+def _fetch_all_regimes(conn, ticker_ids: list[str]) -> dict[str, dict[date, str | None]]:
+    if not ticker_ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT ticker_id::text, time::date, wyckoff_regime
+            FROM daily_snapshots
+            WHERE ticker_id = ANY(%s)
+            ORDER BY ticker_id::text, time ASC
+            """,
+            (ticker_ids,),
+        )
+        rows = cur.fetchall()
+    output: dict[str, dict[date, str | None]] = {}
+    for ticker_id, snapshot_date, regime in rows:
+        output.setdefault(ticker_id, {})[snapshot_date] = regime
+    return output
+
+
+def _count_snapshots(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM daily_snapshots")
+        return int(cur.fetchone()[0])
+
+
 @pytest.mark.integration
 @pytest.mark.db
 def test_b1_all_ticker_execution_path() -> None:
@@ -134,16 +161,18 @@ def test_b1_all_ticker_execution_path() -> None:
             _seed_ohlcv(conn, ticker_id=ticker_a, snapshot_date=d)
             _seed_ohlcv(conn, ticker_id=ticker_b, snapshot_date=d)
 
-        _seed_events(conn, ticker_id=ticker_a, snapshot_date=snapshot_date, events=["SOS"], primary_event="SOS")
+        _seed_events(conn, ticker_id=ticker_a, snapshot_date=snapshot_date, events=["SC"], primary_event="SC")
+        _seed_events(conn, ticker_id=ticker_a, snapshot_date=next_date, events=None, primary_event=None)
         _seed_events(conn, ticker_id=ticker_b, snapshot_date=snapshot_date, events=["SOW"], primary_event="SOW")
+        _seed_events(conn, ticker_id=ticker_b, snapshot_date=next_date, events=None, primary_event=None)
 
         run_wyckoff_regime_job(conn)
 
         regimes_a = _fetch_regimes(conn, ticker_a)
         regimes_b = _fetch_regimes(conn, ticker_b)
 
-        assert regimes_a[snapshot_date] == REGIME_MARKUP
-        assert regimes_a[next_date] == REGIME_MARKUP
+        assert regimes_a[snapshot_date] == REGIME_ACCUMULATION
+        assert regimes_a[next_date] == REGIME_ACCUMULATION
         assert regimes_b[snapshot_date] == REGIME_MARKDOWN
         assert regimes_b[next_date] == REGIME_MARKDOWN
 
@@ -165,13 +194,13 @@ def test_b1_watchlist_scoping() -> None:
 
         _seed_ohlcv(conn, ticker_id=ticker_a, snapshot_date=snapshot_date)
         _seed_ohlcv(conn, ticker_id=ticker_b, snapshot_date=snapshot_date)
-        _seed_events(conn, ticker_id=ticker_a, snapshot_date=snapshot_date, events=["SOS"], primary_event="SOS")
+        _seed_events(conn, ticker_id=ticker_a, snapshot_date=snapshot_date, events=["SPRING"], primary_event="SPRING")
 
         run_wyckoff_regime_job(conn, use_watchlist=True)
 
         regimes_a = _fetch_regimes(conn, ticker_a)
         regimes_b = _fetch_regimes(conn, ticker_b)
-        assert regimes_a[snapshot_date] == REGIME_MARKUP
+        assert regimes_a[snapshot_date] == REGIME_ACCUMULATION
         assert snapshot_date not in regimes_b or regimes_b[snapshot_date] is None
 
 
@@ -214,9 +243,91 @@ def test_b1_non_regime_events_default_unknown() -> None:
     with psycopg2.connect(db_url) as conn:
         ticker_a = _insert_ticker(conn, "AAPL")
         _seed_ohlcv(conn, ticker_id=ticker_a, snapshot_date=snapshot_date)
-        _seed_events(conn, ticker_id=ticker_a, snapshot_date=snapshot_date, events=["SC"], primary_event="SC")
+        _seed_events(conn, ticker_id=ticker_a, snapshot_date=snapshot_date, events=["AR"], primary_event="AR")
 
         run_wyckoff_regime_job(conn)
 
         regimes = _fetch_regimes(conn, ticker_a)
         assert regimes[snapshot_date] == REGIME_UNKNOWN
+
+
+@pytest.mark.integration
+@pytest.mark.db
+def test_b1_parallel_correctness_parity_and_determinism() -> None:
+    db_url = _test_db_url()
+    if not db_url:
+        pytest.skip("KAPMAN_TEST_DATABASE_URL is not set")
+
+    reset_and_migrate(db_url, default_migrations_dir())
+    d1 = date(2025, 12, 6)
+    d2 = date(2025, 12, 7)
+    d3 = date(2025, 12, 8)
+
+    with psycopg2.connect(db_url) as conn:
+        ticker_a = _insert_ticker(conn, "AAPL")
+        ticker_b = _insert_ticker(conn, "MSFT")
+        ticker_c = _insert_ticker(conn, "NVDA")
+
+        for d in (d1, d2, d3):
+            _seed_ohlcv(conn, ticker_id=ticker_a, snapshot_date=d)
+            _seed_ohlcv(conn, ticker_id=ticker_b, snapshot_date=d)
+            _seed_ohlcv(conn, ticker_id=ticker_c, snapshot_date=d)
+
+        _seed_events(conn, ticker_id=ticker_a, snapshot_date=d1, events=["SC"], primary_event="SC")
+        _seed_events(conn, ticker_id=ticker_a, snapshot_date=d3, events=["SOS"], primary_event="SOS")
+        _seed_events(conn, ticker_id=ticker_b, snapshot_date=d1, events=["BC"], primary_event="BC")
+        _seed_events(conn, ticker_id=ticker_c, snapshot_date=d2, events=["SPRING"], primary_event="SPRING")
+
+        run_wyckoff_regime_job(conn, workers=1)
+        count_single = _count_snapshots(conn)
+        regimes_single = _fetch_all_regimes(conn, [ticker_a, ticker_b, ticker_c])
+
+        run_wyckoff_regime_job(conn, workers=2)
+        count_parallel = _count_snapshots(conn)
+        regimes_parallel = _fetch_all_regimes(conn, [ticker_a, ticker_b, ticker_c])
+
+        assert count_single == count_parallel
+        assert regimes_single == regimes_parallel
+
+        run_wyckoff_regime_job(conn, workers=2)
+        regimes_parallel_repeat = _fetch_all_regimes(conn, [ticker_a, ticker_b, ticker_c])
+        assert regimes_parallel == regimes_parallel_repeat
+
+
+@pytest.mark.integration
+@pytest.mark.db
+def test_b1_parallel_worker_boundaries() -> None:
+    db_url = _test_db_url()
+    if not db_url:
+        pytest.skip("KAPMAN_TEST_DATABASE_URL is not set")
+
+    reset_and_migrate(db_url, default_migrations_dir())
+    snapshot_date = date(2025, 12, 9)
+
+    with psycopg2.connect(db_url) as conn:
+        ticker_a = _insert_ticker(conn, "AAPL")
+        _seed_ohlcv(conn, ticker_id=ticker_a, snapshot_date=snapshot_date)
+        _seed_events(conn, ticker_id=ticker_a, snapshot_date=snapshot_date, events=["SOS"], primary_event="SOS")
+
+        run_wyckoff_regime_job(conn, workers=4, max_workers=6)
+
+        regimes = _fetch_regimes(conn, ticker_a)
+        assert regimes[snapshot_date] == REGIME_MARKUP
+
+    reset_and_migrate(db_url, default_migrations_dir())
+    snapshot_date = date(2025, 12, 10)
+
+    with psycopg2.connect(db_url) as conn:
+        ticker_a = _insert_ticker(conn, "AAPL")
+        ticker_b = _insert_ticker(conn, "MSFT")
+        _seed_ohlcv(conn, ticker_id=ticker_a, snapshot_date=snapshot_date)
+        _seed_ohlcv(conn, ticker_id=ticker_b, snapshot_date=snapshot_date)
+        _seed_events(conn, ticker_id=ticker_a, snapshot_date=snapshot_date, events=["SOS"], primary_event="SOS")
+        _seed_events(conn, ticker_id=ticker_b, snapshot_date=snapshot_date, events=["SOW"], primary_event="SOW")
+
+        run_wyckoff_regime_job(conn, workers=10, max_workers=2)
+
+        regimes_a = _fetch_regimes(conn, ticker_a)
+        regimes_b = _fetch_regimes(conn, ticker_b)
+        assert regimes_a[snapshot_date] == REGIME_MARKUP
+        assert regimes_b[snapshot_date] == REGIME_MARKDOWN

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
 import subprocess
 import time
@@ -18,15 +19,21 @@ DEFAULT_HEARTBEAT_TICKERS = 50
 logger = logging.getLogger("kapman.b1")
 
 REGIME_UNKNOWN = "UNKNOWN"
+REGIME_ACCUMULATION = "ACCUMULATION"
+REGIME_DISTRIBUTION = "DISTRIBUTION"
 REGIME_MARKUP = "MARKUP"
 REGIME_MARKDOWN = "MARKDOWN"
 
 REGIME_SETTING_EVENTS = {
+    "SC": REGIME_ACCUMULATION,
+    "SPRING": REGIME_ACCUMULATION,
     "SOS": REGIME_MARKUP,
+    "BC": REGIME_DISTRIBUTION,
+    "UT": REGIME_DISTRIBUTION,
     "SOW": REGIME_MARKDOWN,
 }
 
-REGIME_EVENT_PRIORITY = ["SOS", "SOW"]
+REGIME_EVENT_PRIORITY = ["SC", "SPRING", "SOS", "BC", "UT", "SOW"]
 
 
 @dataclass(frozen=True)
@@ -196,7 +203,7 @@ def _fetch_events_by_date(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT time::date, events_detected, primary_event, events_json
+            SELECT time::date, events_detected
             FROM daily_snapshots
             WHERE ticker_id = %s AND {where_clause}
             ORDER BY time ASC
@@ -206,8 +213,8 @@ def _fetch_events_by_date(
         rows = cur.fetchall()
 
     events_by_date: dict[date, list[str]] = {}
-    for snapshot_date, events_detected, primary_event, events_json in rows:
-        codes = _extract_event_codes(events_detected, primary_event, events_json)
+    for snapshot_date, events_detected in rows:
+        codes = _extract_event_codes(events_detected)
         if codes:
             events_by_date[snapshot_date] = codes
     return events_by_date
@@ -245,30 +252,13 @@ def _fetch_prior_regime_state(
 
 def _extract_event_codes(
     events_detected: Any,
-    primary_event: Any,
-    events_json: Any,
 ) -> list[str]:
     codes: list[str] = []
-    if primary_event:
-        codes.append(str(primary_event))
     if events_detected:
         if isinstance(events_detected, (list, tuple)):
             codes.extend(str(item) for item in events_detected)
         else:
             codes.append(str(events_detected))
-    if events_json:
-        if isinstance(events_json, dict):
-            nested = events_json.get("events") or events_json.get("events_detected")
-            if isinstance(nested, (list, tuple)):
-                for item in nested:
-                    if isinstance(item, dict):
-                        code = item.get("event") or item.get("code") or item.get("type")
-                        if code:
-                            codes.append(str(code))
-                    else:
-                        codes.append(str(item))
-        elif isinstance(events_json, (list, tuple)):
-            codes.extend(str(item) for item in events_json)
     normalized = []
     for code in codes:
         if not code:
@@ -286,6 +276,7 @@ def _resolve_regime_for_date(
     for candidate in REGIME_EVENT_PRIORITY:
         if candidate in events_set:
             selected_event = candidate
+            break
 
     if selected_event:
         return RegimeState(
@@ -297,7 +288,7 @@ def _resolve_regime_for_date(
     return RegimeState(
         regime=prior_state.regime,
         confidence=prior_state.confidence,
-        set_by_event=prior_state.set_by_event,
+        set_by_event=None,
     )
 
 
@@ -308,8 +299,17 @@ def _upsert_regime_snapshots(
 ) -> None:
     if not rows:
         return
-    insert_sql = """
-        INSERT INTO daily_snapshots (
+    update_sql = """
+        UPDATE daily_snapshots AS ds
+        SET
+            wyckoff_regime = v.wyckoff_regime,
+            wyckoff_regime_confidence = v.wyckoff_regime_confidence::numeric,
+            wyckoff_regime_set_by_event = v.wyckoff_regime_set_by_event,
+            model_version = v.model_version,
+            created_at = v.created_at
+        FROM (
+            VALUES %s
+        ) AS v(
             time,
             ticker_id,
             wyckoff_regime,
@@ -318,17 +318,10 @@ def _upsert_regime_snapshots(
             model_version,
             created_at
         )
-        VALUES %s
-        ON CONFLICT (time, ticker_id)
-        DO UPDATE SET
-            wyckoff_regime = EXCLUDED.wyckoff_regime,
-            wyckoff_regime_confidence = EXCLUDED.wyckoff_regime_confidence,
-            wyckoff_regime_set_by_event = EXCLUDED.wyckoff_regime_set_by_event,
-            model_version = EXCLUDED.model_version,
-            created_at = EXCLUDED.created_at
+        WHERE ds.time = v.time AND ds.ticker_id = v.ticker_id::uuid
     """
     with conn.cursor() as cur:
-        execute_values(cur, insert_sql, rows, page_size=1000)
+        execute_values(cur, update_sql, rows, page_size=1000)
     conn.commit()
 
 
@@ -336,49 +329,60 @@ def _should_emit_heartbeat(processed: int, heartbeat_every: int) -> bool:
     return heartbeat_every > 0 and processed > 0 and processed % heartbeat_every == 0
 
 
-def run_wyckoff_regime_job(
+def _resolve_worker_count(
+    *,
+    requested: Optional[int],
+    max_workers: int,
+    total_tickers: int,
+) -> int:
+    if max_workers <= 0:
+        raise ValueError("max_workers must be >= 1")
+    if total_tickers <= 1:
+        return 1
+    try:
+        cpu_count_raw = multiprocessing.cpu_count()
+    except NotImplementedError:
+        cpu_count_raw = 1
+    cpu_count = int(cpu_count_raw) if cpu_count_raw else 1
+    if requested is None:
+        return max(1, min(cpu_count, max_workers, total_tickers))
+    if requested <= 0:
+        raise ValueError("workers must be >= 1")
+    return max(1, min(requested, max_workers, total_tickers))
+
+
+def _partition_tickers(
+    tickers: list[tuple[str, str]],
+    workers: int,
+) -> list[list[tuple[str, str]]]:
+    if workers <= 1:
+        return [tickers]
+    total = len(tickers)
+    workers = min(workers, total) if total else 1
+    base, remainder = divmod(total, workers)
+    batches: list[list[tuple[str, str]]] = []
+    idx = 0
+    for i in range(workers):
+        size = base + (1 if i < remainder else 0)
+        batches.append(tickers[idx : idx + size])
+        idx += size
+    if any(len(batch) == 0 for batch in batches):
+        raise ValueError("empty worker batch")
+    return batches
+
+
+def _run_for_tickers(
     conn,
     *,
-    symbols: Optional[Iterable[str]] = None,
-    use_watchlist: bool = False,
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
-    heartbeat_every: int = 0,
-    verbose: bool = False,
-    model_version: str = MODEL_VERSION,
-    log: Optional[logging.Logger] = None,
-) -> Dict[str, Any]:
-    log = log or logger
-    t0 = time.monotonic()
-
-    if symbols is not None and use_watchlist:
-        raise ValueError("symbols and use_watchlist are mutually exclusive")
-
-    if symbols is not None:
-        tickers, missing = _fetch_tickers_for_symbols(conn, symbols)
-        if missing:
-            log.warning("[B1] Symbols missing ticker_id: %s", ", ".join(missing))
-    elif use_watchlist:
-        tickers = _fetch_watchlist_tickers(conn)
-    else:
-        tickers = _fetch_active_tickers(conn)
-
-    total_tickers = len(tickers)
-    stats = B1BatchStats(total_tickers=total_tickers, start_time=t0)
-    if total_tickers == 0:
-        log.warning("[B1] No tickers resolved; nothing to compute")
-        stats.end_time = time.monotonic()
-        return stats.to_log_extra()
-
-    if verbose:
-        log.info(
-            "[B1] RUN HEADER tickers=%s start_date=%s end_date=%s heartbeat_every=%s deterministic=true",
-            total_tickers,
-            start_date.isoformat() if start_date else "none",
-            end_date.isoformat() if end_date else "none",
-            heartbeat_every,
-        )
-
+    tickers: list[tuple[str, str]],
+    start_date: Optional[date],
+    end_date: Optional[date],
+    heartbeat_every: int,
+    verbose: bool,
+    model_version: str,
+    log: logging.Logger,
+) -> B1BatchStats:
+    stats = B1BatchStats(total_tickers=len(tickers), start_time=time.monotonic())
     for ticker_id, symbol in tickers:
         try:
             dates = _fetch_ohlcv_dates(
@@ -403,10 +407,7 @@ def run_wyckoff_regime_job(
                 end_date=dates[-1],
             )
 
-            initial_time = _snapshot_time_utc(dates[0])
-            prior_state = _fetch_prior_regime_state(conn, ticker_id=ticker_id, before_time=initial_time)
-            if prior_state is None:
-                prior_state = RegimeState(regime=REGIME_UNKNOWN, confidence=None, set_by_event=None)
+            prior_state = RegimeState(regime=REGIME_UNKNOWN, confidence=None, set_by_event=None)
 
             if verbose:
                 log.info(
@@ -451,7 +452,158 @@ def run_wyckoff_regime_job(
             stats.errors += 1
             conn.rollback()
             log.exception("[B1] Failed symbol %s (%s)", symbol, ticker_id)
+    stats.end_time = time.monotonic()
+    return stats
 
+
+def _worker_entry(
+    tickers: list[tuple[str, str]],
+    start_date: Optional[date],
+    end_date: Optional[date],
+    heartbeat_every: int,
+    verbose: bool,
+    model_version: str,
+    result_queue,
+) -> None:
+    log = logger
+    try:
+        dsn = os.environ["DATABASE_URL"]
+        with psycopg2.connect(dsn) as conn:
+            stats = _run_for_tickers(
+                conn,
+                tickers=tickers,
+                start_date=start_date,
+                end_date=end_date,
+                heartbeat_every=heartbeat_every,
+                verbose=verbose,
+                model_version=model_version,
+                log=log,
+            )
+        result_queue.put(stats.to_log_extra())
+    except Exception as exc:
+        log.exception("[B1] Worker failed")
+        result_queue.put({"error": str(exc)})
+        raise
+
+
+def run_wyckoff_regime_job(
+    conn,
+    *,
+    symbols: Optional[Iterable[str]] = None,
+    use_watchlist: bool = False,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    heartbeat_every: int = 0,
+    verbose: bool = False,
+    model_version: str = MODEL_VERSION,
+    log: Optional[logging.Logger] = None,
+    workers: Optional[int] = None,
+    max_workers: int = 6,
+) -> Dict[str, Any]:
+    log = log or logger
+    t0 = time.monotonic()
+
+    if symbols is not None and use_watchlist:
+        raise ValueError("symbols and use_watchlist are mutually exclusive")
+
+    if symbols is not None:
+        tickers, missing = _fetch_tickers_for_symbols(conn, symbols)
+        if missing:
+            log.warning("[B1] Symbols missing ticker_id: %s", ", ".join(missing))
+    elif use_watchlist:
+        tickers = _fetch_watchlist_tickers(conn)
+    else:
+        tickers = _fetch_active_tickers(conn)
+
+    tickers = sorted(tickers, key=lambda row: row[0])
+    total_tickers = len(tickers)
+    stats = B1BatchStats(total_tickers=total_tickers, start_time=t0)
+    if total_tickers == 0:
+        log.warning("[B1] No tickers resolved; nothing to compute")
+        stats.end_time = time.monotonic()
+        return stats.to_log_extra()
+
+    if verbose:
+        log.info(
+            "[B1] RUN HEADER tickers=%s start_date=%s end_date=%s heartbeat_every=%s deterministic=true",
+            total_tickers,
+            start_date.isoformat() if start_date else "none",
+            end_date.isoformat() if end_date else "none",
+            heartbeat_every,
+        )
+
+    effective_workers = _resolve_worker_count(
+        requested=workers,
+        max_workers=max_workers,
+        total_tickers=total_tickers,
+    )
+
+    if effective_workers <= 1:
+        stats = _run_for_tickers(
+            conn,
+            tickers=tickers,
+            start_date=start_date,
+            end_date=end_date,
+            heartbeat_every=heartbeat_every,
+            verbose=verbose,
+            model_version=model_version,
+            log=log,
+        )
+        log.info("[B1] RUN SUMMARY %s", stats.to_log_extra())
+        return stats.to_log_extra()
+
+    if "DATABASE_URL" not in os.environ:
+        raise RuntimeError("DATABASE_URL must be set for parallel workers")
+    batches = _partition_tickers(tickers, effective_workers)
+    for idx, batch in enumerate(batches, start=1):
+        log.info("[B1] Worker batch %s size=%s", idx, len(batch))
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.SimpleQueue()
+    processes = []
+    for batch in batches:
+        proc = ctx.Process(
+            target=_worker_entry,
+            args=(
+                batch,
+                start_date,
+                end_date,
+                heartbeat_every,
+                verbose,
+                model_version,
+                result_queue,
+            ),
+        )
+        proc.start()
+        processes.append(proc)
+
+    results: list[dict[str, Any]] = []
+    for _ in processes:
+        results.append(result_queue.get())
+
+    for proc in processes:
+        proc.join()
+
+    errors = [proc for proc in processes if proc.exitcode != 0]
+    if errors:
+        log.error("[B1] One or more workers failed")
+        raise RuntimeError("B1 parallel workers failed")
+
+    stats = B1BatchStats(total_tickers=total_tickers, start_time=t0)
+    for result in results:
+        if "error" in result:
+            stats.errors += 1
+            continue
+        log.info(
+            "[B1] Worker summary processed=%s written=%s missing_history=%s errors=%s",
+            result.get("processed", 0),
+            result.get("snapshots_written", 0),
+            result.get("missing_history", 0),
+            result.get("errors", 0),
+        )
+        stats.processed += int(result.get("processed", 0))
+        stats.snapshots_written += int(result.get("snapshots_written", 0))
+        stats.missing_history += int(result.get("missing_history", 0))
+        stats.errors += int(result.get("errors", 0))
     stats.end_time = time.monotonic()
     log.info("[B1] RUN SUMMARY %s", stats.to_log_extra())
     return stats.to_log_extra()

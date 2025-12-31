@@ -1,8 +1,15 @@
-\echo '==== OPTIONS CHAINS DASHBOARD ===='
+\echo '===================================================================='
+\echo 'OPTIONS CHAINS DASHBOARD'
+\echo '===================================================================='
 
 /* ------------------------------------------------------------
    1. Latest Snapshot Summary
 ------------------------------------------------------------ */
+\echo ''
+\echo '1) LATEST SNAPSHOT SUMMARY'
+\echo '   - Overall coverage for most recent options snapshot'
+\echo ''
+
 WITH latest AS (
     SELECT max(time) AS snapshot_time
     FROM public.options_chains
@@ -18,9 +25,15 @@ FROM public.options_chains oc
 JOIN latest l ON oc.time = l.snapshot_time
 GROUP BY l.snapshot_time;
 
+
 /* ------------------------------------------------------------
    2. Per-Symbol Coverage (Top 25)
 ------------------------------------------------------------ */
+\echo ''
+\echo '2) PER-SYMBOL CONTRACT COVERAGE (TOP 25)'
+\echo '   - Identifies symbols with deepest option chains'
+\echo ''
+
 WITH latest AS (
     SELECT max(time) AS snapshot_time
     FROM public.options_chains
@@ -42,9 +55,15 @@ FROM per_symbol
 ORDER BY contracts DESC
 LIMIT 25;
 
+
 /* ------------------------------------------------------------
    3. Null Coverage Diagnostics
 ------------------------------------------------------------ */
+\echo ''
+\echo '3) NULL FIELD DIAGNOSTICS (LATEST SNAPSHOT)'
+\echo '   - Data completeness for key option Greeks & pricing fields'
+\echo ''
+
 WITH latest AS (
     SELECT max(time) AS snapshot_time
     FROM public.options_chains
@@ -58,9 +77,15 @@ SELECT
 FROM public.options_chains oc
 JOIN latest l ON oc.time = l.snapshot_time;
 
+
 /* ------------------------------------------------------------
    4. Expiration Distribution
 ------------------------------------------------------------ */
+\echo ''
+\echo '4) EXPIRATION DATE DISTRIBUTION'
+\echo '   - Contract counts by expiration for latest snapshot'
+\echo ''
+
 WITH latest AS (
     SELECT max(time) AS snapshot_time
     FROM public.options_chains
@@ -73,7 +98,16 @@ JOIN latest l ON oc.time = l.snapshot_time
 GROUP BY expiration_date
 ORDER BY expiration_date;
 
-\echo '==== DAILY OPTIONS SNAPSHOT COVERAGE (BY DAY) ===='
+
+/* ------------------------------------------------------------
+   5. Daily Snapshot Coverage (Historical)
+------------------------------------------------------------ */
+\echo ''
+\echo '===================================================================='
+\echo '5) DAILY OPTIONS SNAPSHOT COVERAGE (BY DAY)'
+\echo '   - Historical completeness vs expected watchlist size'
+\echo '===================================================================='
+\echo ''
 
 WITH daily AS (
     SELECT
@@ -104,3 +138,9 @@ SELECT
 FROM daily d
 CROSS JOIN expected e
 ORDER BY snapshot_date DESC;
+
+
+\echo ''
+\echo '===================================================================='
+\echo 'END OF OPTIONS CHAINS DASHBOARD'
+\echo '===================================================================='
