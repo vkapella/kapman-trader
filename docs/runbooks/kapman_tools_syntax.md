@@ -181,6 +181,14 @@ optional arguments:
   --quiet                             #Only warnings + summaries
   --heartbeat HEARTBEAT               #Heartbeat every N tickers (default: 50)  
 
+## Compute Wyckoff Regime
+
+KapMan B1: Compute Wyckoff regime into daily_snapshots
+
+usage: run_b1_wyckoff_regime.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat]  
+
+python -m scripts.run_b1_wyckoff_regime --heartbeat   
+
 
 ## Utility to Produce Parquet of OHLCV for Wyckoff_fast_bench testing
 
