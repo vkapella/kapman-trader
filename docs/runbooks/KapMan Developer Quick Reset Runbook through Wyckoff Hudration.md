@@ -483,73 +483,93 @@ docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < docs/runbook
 python -m scripts.run_b1_wyckoff_regime --heartbeat 
 
 
-1. Connect to the database interactively using psql
-
+Echo "----------------------------------------------------------------------------"
+Echo "1. Connect to the database interactively using psql"
+Echo "----------------------------------------------------------------------------"
 docker exec -it kapman-db psql -U kapman -d kapman
 
-2. Basic connectivity / health check (returns 1 if DB is reachable)
+Echo "----------------------------------------------------------------------------"
+Echo "2. Basic connectivity / health check (returns 1 if DB is reachable)"
+Echo "----------------------------------------------------------------------------"
+docker exec kapman-db psql -U kapman -d kapman -c "SELECT 1;"
 
-docker exec kapman-db psql -U kapman -d kapman -c “SELECT 1;”
+docker exec -it kapman-db psql -U kapman -d kapman -c "\dt"
 
-3. List all tables in the database
+Echo "----------------------------------------------------------------------------"
+Echo "3. Describe the daily_snapshots table schema (columns, types, constraints)"
+Echo "----------------------------------------------------------------------------"
+docker exec kapman-db psql -U kapman -d kapman -c "SELECT column_name, data_type FROM information_schema.columns WHERE table_name='daily_snapshots' ORDER BY column_name;"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “\dt”
+Echo "----------------------------------------------------------------------------"
+Echo "4. Show only Wyckoff-related columns in daily_snapshots"
+Echo "----------------------------------------------------------------------------"
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT column_name, data_type FROM information_schema.columns WHERE table_name='daily_snapshots' AND column_name LIKE 'wyckoff_%' ORDER BY column_name;"
 
-4. Describe the daily_snapshots table schema (columns, types, constraints)
+Echo "----------------------------------------------------------------------------"
+Echo "5. Show Wyckoff-related CHECK constraints on daily_snapshots"
+Echo "----------------------------------------------------------------------------"
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT conname, pg_get_constraintdef(c.oid) FROM pg_constraint c JOIN pg_class t ON c.conrelid=t.oid WHERE t.relname='daily_snapshots' AND conname ILIKE '%wyckoff%';"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “\d daily_snapshots”
+Echo "----------------------------------------------------------------------------"
+Echo "6. Count total snapshot rows in daily_snapshots"
+Echo "----------------------------------------------------------------------------"
 
-5. Show only Wyckoff-related columns in daily_snapshots
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT COUNT(*) FROM daily_snapshots;"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT column_name, data_type FROM information_schema.columns WHERE table_name=‘daily_snapshots’ AND column_name LIKE ‘wyckoff_%’ ORDER BY column_name;”
+Echo "----------------------------------------------------------------------------"
+Echo "7. Count distinct tickers represented in daily_snapshots"
+Echo "----------------------------------------------------------------------------"
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT COUNT(DISTINCT ticker_id) FROM daily_snapshots;"
 
-6. Show Wyckoff-related CHECK constraints on daily_snapshots
+Echo "----------------------------------------------------------------------------"
+Echo "8. Count snapshot rows grouped by primary_event (event coverage overview)"
+Echo "----------------------------------------------------------------------------"
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT primary_event, COUNT(*) FROM daily_snapshots WHERE primary_event IS NOT NULL GROUP BY primary_event ORDER BY COUNT(*) DESC;"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT conname, pg_get_constraintdef(c.oid) FROM pg_constraint c JOIN pg_class t ON c.conrelid=t.oid WHERE t.relname=‘daily_snapshots’ AND conname ILIKE ‘%wyckoff%’;”
+Echo "----------------------------------------------------------------------------"
+Echo "9. Check for presence of regime-setting events (SOS / SOW)"
+Echo "----------------------------------------------------------------------------"
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT primary_event, COUNT(*) FROM daily_snapshots WHERE primary_event IN ('SOS','SOW') GROUP BY primary_event;"
 
-7. Count total snapshot rows in daily_snapshots
+Echo "----------------------------------------------------------------------------"
+Echo "10. Count snapshot rows by wyckoff_regime (historical distribution)"
+Echo "----------------------------------------------------------------------------"
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT wyckoff_regime, COUNT(*) FROM daily_snapshots WHERE wyckoff_regime IS NOT NULL GROUP BY wyckoff_regime ORDER BY wyckoff_regime;"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT COUNT(*) FROM daily_snapshots;”
+Echo "----------------------------------------------------------------------------"
+Echo "11. Count distinct tickers by their latest wyckoff_regime (current market state)"
+Echo "----------------------------------------------------------------------------"
 
-8. Count distinct tickers represented in daily_snapshots
+docker exec -it kapman-db psql -U kapman -d kapman -c "WITH latest AS (SELECT DISTINCT ON (ticker_id) ticker_id, wyckoff_regime FROM daily_snapshots ORDER BY ticker_id, time DESC) SELECT wyckoff_regime, COUNT(*) FROM latest GROUP BY wyckoff_regime ORDER BY wyckoff_regime;"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT COUNT(DISTINCT ticker_id) FROM daily_snapshots;”
+Echo "----------------------------------------------------------------------------"
+Echo "12. Count snapshots missing regime or regime confidence (sanity check)"
+Echo "----------------------------------------------------------------------------"
 
-9. Count snapshot rows grouped by primary_event (event coverage overview)
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT COUNT(*) FROM daily_snapshots WHERE wyckoff_regime IS NULL OR wyckoff_regime_confidence IS NULL;"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT primary_event, COUNT() FROM daily_snapshots WHERE primary_event IS NOT NULL GROUP BY primary_event ORDER BY COUNT() DESC;”
 
-10. Check for presence of regime-setting events (SOS / SOW)
+Echo "----------------------------------------------------------------------------"
+Echo "13. Inspect the 10 most recent snapshots (regime-related fields only)"
+Echo "----------------------------------------------------------------------------"
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT time, ticker_id, wyckoff_regime, wyckoff_regime_confidence, wyckoff_regime_set_by_event FROM daily_snapshots ORDER BY time DESC LIMIT 10;"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT primary_event, COUNT(*) FROM daily_snapshots WHERE primary_event IN (‘SOS’,‘SOW’) GROUP BY primary_event;”
+Echo "----------------------------------------------------------------------------"
+Echo "14. Inspect full regime history for a single ticker (replace UUID)"
+Echo "----------------------------------------------------------------------------"
 
-11. Count snapshot rows by wyckoff_regime (historical distribution)
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT  ds.time, ds.primary_event, ds.wyckoff_regime, ds.wyckoff_regime_confidence, ds.wyckoff_regime_set_by_event FROM daily_snapshots ds JOIN tickers t ON t.id = ds.ticker_id WHERE t.symbol = 'AAPL' ORDER BY ds.time;"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT wyckoff_regime, COUNT(*) FROM daily_snapshots WHERE wyckoff_regime IS NOT NULL GROUP BY wyckoff_regime ORDER BY wyckoff_regime;”
+Echo "----------------------------------------------------------------------------"
+Echo "15. Check earliest and latest snapshot timestamps in the database"
+Echo "----------------------------------------------------------------------------"
+docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT MIN(time), MAX(time) FROM daily_snapshots;"
 
-12. Count distinct tickers by their latest wyckoff_regime (current market state)
+Echo "----------------------------------------------------------------------------"
+Echo "16. Sanity check: detect duplicate snapshots per ticker per day"
+Echo "----------------------------------------------------------------------------"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c “WITH latest AS (SELECT DISTINCT ON (ticker_id) ticker_id, wyckoff_regime FROM daily_snapshots ORDER BY ticker_id, time DESC) SELECT wyckoff_regime, COUNT(*) FROM latest GROUP BY wyckoff_regime ORDER BY wyckoff_regime;”
-
-13. Count snapshots missing regime or regime confidence (sanity check)
-
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT COUNT(*) FROM daily_snapshots WHERE wyckoff_regime IS NULL OR wyckoff_regime_confidence IS NULL;”
-
-14. Inspect the 10 most recent snapshots (regime-related fields only)
-
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT time, ticker_id, wyckoff_regime, wyckoff_regime_confidence, wyckoff_regime_set_by_event FROM daily_snapshots ORDER BY time DESC LIMIT 10;”
-
-15. Inspect full regime history for a single ticker (replace UUID)
-
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT time, primary_event, wyckoff_regime, wyckoff_regime_confidence, wyckoff_regime_set_by_event FROM daily_snapshots WHERE ticker_id=‘PASTE_TICKER_UUID’ ORDER BY time;”
-
-16. Check earliest and latest snapshot timestamps in the database
-
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT MIN(time), MAX(time) FROM daily_snapshots;”
-
-17. Sanity check: detect duplicate snapshots per ticker per day
-
-docker exec -it kapman-db psql -U kapman -d kapman -c “SELECT time::date, COUNT() - COUNT(DISTINCT ticker_id) AS duplicates FROM daily_snapshots GROUP BY time::date HAVING COUNT() <> COUNT(DISTINCT ticker_id) ORDER BY time::date DESC;”ULL;"
+docker exec -it kapman-db psql -U kapman -d kapman -c  "SELECT time::date,COUNT(*) - COUNT(DISTINCT ticker_id) AS duplicates FROM daily_snapshots GROUP BY time::date HAVING COUNT(*) <> COUNT(DISTINCT ticker_id) ORDER BY time::date DESC;"
 
 
 * Step 11 — Optional: Full Integration Test Sweep (Schema + Invariants + A6.1 Coverage)
