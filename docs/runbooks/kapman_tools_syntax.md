@@ -181,6 +181,15 @@ optional arguments:
   --quiet                             #Only warnings + summaries
   --heartbeat HEARTBEAT               #Heartbeat every N tickers (default: 50)  
 
+## Compute Wyckoff Events
+
+KapMan B2: Compute Wyckoff events into daily_snapshots
+
+usage: run_b2_wyckoff_events.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat]  
+
+python -m scripts.run_b2_wyckoff_events --heartbeat   
+
+
 ## Compute Wyckoff Regime
 
 KapMan B1: Compute Wyckoff regime into daily_snapshots

@@ -1,0 +1,3 @@
+ERROR:  relation "watchlist" does not exist
+LINE 10:   JOIN watchlist w
+                ^
