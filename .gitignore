@@ -70,3 +70,8 @@ Thumbs.db
 frontend/node_modules, frontend/.next/
 api/node_moduleskapman.egg-infodb/*.sql
 venv/
+
+## Large daily ouputs
+
+# KapMan prod vs bench generated artifacts
+tools/prod_vs_bench/outputs/

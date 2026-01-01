@@ -251,4 +251,41 @@ docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d ka
 
 ## Utility to Produce Parquet of OHLCV for Wyckoff_fast_bench testing
 
-python -m scripts.export.export_ohlcv_to_fast_bench_parquet 
+python -m scripts.benchmark_support.export_ohlcv_to_fast_bench_parquet 
+
+## Utility to Produce Production Benchmark data for comparison with benchmark results
+
+Run production Wyckoff evaluation against benchmark outputs.
+
+python -m tools.prod_vs_bench.run_prod_eval --help
+
+python -m tools.prod_vs_bench.run_prod_eval --start-date 2023-12-28 --end-date 2025-12-24 --benchmark-dir "/Volumes/OWC Envoy Pro SX/App Development/wyckoff_fast_bench/outputs/011_Enhance_Wyckoff_Sequence" --output-dir tools/prod_vs_bench/outputs --verbose-metrics --heartbeat-every 200 --workers 6
+
+usage: run_prod_eval.py [-h] --start-date START_DATE --end-date END_DATE [--benchmark-dir BENCHMARK_DIR] [--output-dir OUTPUT_DIR] [--symbols SYMBOLS][--verbose-metrics] [--heartbeat-every HEARTBEAT_EVERY] [--workers WORKERS] [--max-workers MAX_WORKERS]
+
+optional arguments:
+  -h, --help                        #show this help message and exit
+  --start-date START_DATE           #Start date YYYY-MM-DD
+  --end-date END_DATE               #End date YYYY-MM-DD
+  --benchmark-dir BENCHMARK_DIR     #Benchmark output directory to mirror into outputs/bench and align schemas
+  --output-dir OUTPUT_DIR           #Output directory root
+  --symbols SYMBOLS                 #Comma-separated symbols override
+  --verbose-metrics                 #Enable verbose progress metrics logging
+  --heartbeat-every HEARTBEAT_EVERY #Emit heartbeat every N symbols when verbose metrics enabled
+  --workers WORKERS                 #Worker processes (default: min(6, cpu_count))
+  --max-workers MAX_WORKERS         #Hard cap on workers
+
+## Utility to Compare Production Benchmark data for comparison with benchmark results
+
+Compare benchmark vs production outputs.
+
+python -m tools.prod_vs_bench.compare_outputs --prod-dir tools/prod_vs_bench/outputs/prod --bench-dir tools/prod_vs_bench/outputs/bench --output-dir tools/prod_vs_bench/outputs/comparison --verbose-metrics
+
+usage: compare_outputs.py [-h] [--prod-dir PROD_DIR] [--bench-dir BENCH_DIR] [--output-dir OUTPUT_DIR] [--verbose-metrics]
+
+optional arguments:
+  -h, --help              #show this help message and exit
+  --prod-dir PROD_DIR     #Directory containing production outputs
+  --bench-dir BENCH_DIR   #Directory containing benchmark outputs
+  --output-dir OUTPUT_DIR #Directory to write comparison outputs
+  --verbose-metrics       #Enable verbose progress metrics logging
