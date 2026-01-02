@@ -2,19 +2,29 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Any, Dict, Tuple
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, Optional, Tuple
 
 from core.providers.ai.claude import ClaudeProvider
 from core.providers.ai.openai import OpenAIProvider
 from core.providers.ai.prompt_builder import build_prompt
 from core.providers.ai.response_parser import (
     STANDARD_GUARDRAILS,
+    _failure_response,
     _parse_raw_response,
     _validate_candidate,
     normalize_agent_response,
 )
+from core.ingestion.options.db import connect as options_db_connect
+from core.ingestion.options.db import default_db_url
 
 logger = logging.getLogger("kapman.ai.c1")
+
+_STRIKE_KEYS = ("option_strike", "strike", "strike_price")
+_EXPIRATION_KEYS = ("option_expiration", "expiration", "expiry", "expiration_date", "exp_date")
+_OPTION_TYPE_KEYS = ("option_type", "type", "contract_type")
+_STRIKE_QUANT = Decimal("0.0001")
 
 
 def _canonical_json(value: Any) -> str:
@@ -56,6 +66,276 @@ def _first_present(mapping: Dict[str, Any], keys: Tuple[str, ...], default: str)
         if value is not None:
             return str(value)
     return default
+
+
+def _first_value(mapping: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in mapping:
+            value = mapping.get(key)
+            if value is not None:
+                return value
+    return None
+
+
+def _parse_snapshot_time(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _parse_expiration(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            if "T" in text:
+                return datetime.fromisoformat(text).date()
+            return date.fromisoformat(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_strike(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value)).quantize(_STRIKE_QUANT)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _normalize_option_type(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    if text in {"C", "CALL"}:
+        return "C"
+    if text in {"P", "PUT"}:
+        return "P"
+    return None
+
+
+def _extract_contract_fields(source: Any) -> tuple[Optional[tuple[date, Decimal, str]], Optional[str]]:
+    if not isinstance(source, dict):
+        return None, None
+    strike_raw = _first_value(source, _STRIKE_KEYS)
+    expiration_raw = _first_value(source, _EXPIRATION_KEYS)
+    option_type_raw = _first_value(source, _OPTION_TYPE_KEYS)
+
+    if strike_raw is None and expiration_raw is None and option_type_raw is None:
+        return None, None
+    if strike_raw is None or expiration_raw is None or option_type_raw is None:
+        return None, "missing_contract_fields"
+
+    strike = _parse_strike(strike_raw)
+    expiration = _parse_expiration(expiration_raw)
+    option_type = _normalize_option_type(option_type_raw)
+
+    if strike is None or expiration is None or option_type is None:
+        return None, "invalid_contract_fields"
+
+    return (expiration, strike, option_type), None
+
+
+def _collect_recommendation_contracts(recommendation: Any) -> tuple[list[tuple[date, Decimal, str]], list[str]]:
+    if not isinstance(recommendation, dict):
+        return [], []
+    contracts: list[tuple[date, Decimal, str]] = []
+    errors: list[str] = []
+
+    def _add_contract(source: Any) -> None:
+        contract, error = _extract_contract_fields(source)
+        if contract:
+            contracts.append(contract)
+        if error:
+            errors.append(error)
+
+    _add_contract(recommendation)
+    _add_contract(recommendation.get("primary_leg"))
+    _add_contract(recommendation.get("secondary_leg"))
+
+    legs = recommendation.get("legs") or recommendation.get("option_legs")
+    if isinstance(legs, list):
+        for leg in legs:
+            _add_contract(leg)
+
+    return contracts, errors
+
+
+def _load_option_chain_context(snapshot_payload: dict) -> tuple[set[date], set[tuple[date, Decimal, str]], datetime]:
+    if not isinstance(snapshot_payload, dict):
+        raise ValueError("snapshot_payload_missing")
+    symbol = snapshot_payload.get("symbol") or snapshot_payload.get("ticker")
+    snapshot_time = _parse_snapshot_time(snapshot_payload.get("snapshot_time") or snapshot_payload.get("time"))
+    if not symbol or not snapshot_time:
+        raise ValueError("snapshot_identity_missing")
+
+    db_url = default_db_url()
+    with options_db_connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM tickers WHERE UPPER(symbol) = UPPER(%s) LIMIT 1", (symbol,))
+            row = cur.fetchone()
+        if not row:
+            raise ValueError("ticker_not_found")
+        ticker_id = row[0]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT MAX(time)
+                FROM options_chains
+                WHERE ticker_id = %s
+                  AND time <= %s
+                """,
+                (ticker_id, snapshot_time),
+            )
+            row = cur.fetchone()
+        if not row or row[0] is None:
+            raise ValueError("options_chains_unavailable")
+        options_time = row[0]
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT expiration_date, strike_price, option_type
+                FROM options_chains
+                WHERE ticker_id = %s AND time = %s
+                """,
+                (ticker_id, options_time),
+            )
+            rows = cur.fetchall()
+
+    expirations: set[date] = set()
+    contracts: set[tuple[date, Decimal, str]] = set()
+    for expiration, strike_raw, option_type in rows:
+        if expiration is None or strike_raw is None or option_type is None:
+            continue
+        strike = _parse_strike(strike_raw)
+        option_type_norm = _normalize_option_type(option_type)
+        if strike is None or option_type_norm is None:
+            continue
+        expirations.add(expiration)
+        contracts.add((expiration, strike, option_type_norm))
+
+    if not contracts:
+        raise ValueError("options_chains_empty")
+
+    return expirations, contracts, options_time
+
+
+def _validate_option_recommendations(
+    *,
+    response: dict,
+    snapshot_payload: dict,
+    provider_id: str,
+    model_id: str,
+    prompt_version: str,
+    kapman_model_version: str,
+    invocation_id: str,
+) -> dict:
+    snapshot_metadata = response.get("snapshot_metadata") or {}
+    if snapshot_metadata.get("ticker") == "UNKNOWN":
+        return response
+
+    primary = response.get("primary_recommendation") or {}
+    alternatives = response.get("alternative_recommendations") or []
+
+    primary_contracts, primary_errors = _collect_recommendation_contracts(primary)
+    alternatives_info: list[tuple[int, dict, list[tuple[date, Decimal, str]], list[str]]] = []
+    should_validate = bool(primary_contracts or primary_errors)
+
+    for idx, alt in enumerate(alternatives):
+        contracts, errors = _collect_recommendation_contracts(alt)
+        if contracts or errors:
+            should_validate = True
+        alternatives_info.append((idx, alt, contracts, errors))
+
+    if not should_validate:
+        return response
+
+    try:
+        valid_expirations, valid_contracts, options_time = _load_option_chain_context(snapshot_payload)
+    except Exception as exc:
+        reason = f"Option validation failed: {exc}"
+        return _failure_response(
+            reason=reason,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            kapman_model_version=kapman_model_version,
+        )
+
+    def _contract_errors(contracts: list[tuple[date, Decimal, str]]) -> list[str]:
+        errors: list[str] = []
+        for expiration, strike, option_type in contracts:
+            if expiration not in valid_expirations:
+                errors.append("invalid_expiration")
+                continue
+            if (expiration, strike, option_type) not in valid_contracts:
+                errors.append("invalid_strike")
+        return errors
+
+    primary_validation_errors = list(primary_errors)
+    if primary_contracts:
+        primary_validation_errors.extend(_contract_errors(primary_contracts))
+    if primary_validation_errors:
+        _log_event(
+            invocation_id,
+            "option_validation_drop",
+            {
+                "role": "primary",
+                "errors": primary_validation_errors,
+                "options_time": options_time.isoformat(),
+            },
+        )
+        reason = f"Invalid option contract in primary recommendation: {sorted(set(primary_validation_errors))}"
+        return _failure_response(
+            reason=reason,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            kapman_model_version=kapman_model_version,
+        )
+
+    filtered_alternatives: list[dict] = []
+    for idx, alt, contracts, errors in alternatives_info:
+        validation_errors = list(errors)
+        if contracts:
+            validation_errors.extend(_contract_errors(contracts))
+        if validation_errors:
+            _log_event(
+                invocation_id,
+                "option_validation_drop",
+                {
+                    "role": "alternative",
+                    "index": idx,
+                    "errors": validation_errors,
+                    "options_time": options_time.isoformat(),
+                },
+            )
+            continue
+        filtered_alternatives.append(alt)
+
+    response["alternative_recommendations"] = filtered_alternatives
+    return response
 
 
 def _build_stub_response(
@@ -210,6 +490,16 @@ def invoke_planning_agent(
         model_id=model_id,
         prompt_version=prompt_version,
         kapman_model_version=kapman_model_version,
+    )
+
+    normalized = _validate_option_recommendations(
+        response=normalized,
+        snapshot_payload=snapshot_payload,
+        provider_id=provider_key,
+        model_id=model_id,
+        prompt_version=prompt_version,
+        kapman_model_version=kapman_model_version,
+        invocation_id=invocation_id,
     )
 
     if debug:
