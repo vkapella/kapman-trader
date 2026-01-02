@@ -1,0 +1,10 @@
+  jsonb_object_keys  
+---------------------
+ volatility
+ pattern_recognition
+ trend
+ others
+ volume
+ momentum
+(6 rows)
+

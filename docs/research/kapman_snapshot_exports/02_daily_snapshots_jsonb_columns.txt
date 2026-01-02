@@ -1,0 +1,9 @@
+        column_name        | data_type 
+---------------------------+-----------
+ dealer_metrics_json       | jsonb
+ events_json               | jsonb
+ price_metrics_json        | jsonb
+ technical_indicators_json | jsonb
+ volatility_metrics_json   | jsonb
+(5 rows)
+

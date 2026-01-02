@@ -1,0 +1,7 @@
+ jsonb_object_keys 
+-------------------
+ rvol
+ vsi
+ hv
+(3 rows)
+

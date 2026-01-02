@@ -1,0 +1,13 @@
+                                                        Table "public.daily_snapshots"
+           Column            |           Type           | Collation | Nullable | Default | Storage  | Compression | Stats target | Description 
+-----------------------------+--------------------------+-----------+----------+---------+----------+-------------+--------------+-------------
+ time                        | timestamp with time zone |           | not null |         | plain    |             |              | 
+ ticker_id                   | uuid                     |           | not null |         | plain    |             |              | 
+ wyckoff_phase               | character varying(1)     |           |          |         | extended |             |              | 
+ phase_score                 | numeric(6,3)             |           |          |         | main     |             |              | 
+ phase_confidence            | numeric(4,3)             |           |          |         | main     |             |              | 
+ events_detected             | text[]                   |           |          |         | extended |             |              | 
+ primary_event               | character varying(20)    |           |          |         | extended |             |              | 
+ events_json                 | jsonb                    |           |          |         | extended |             |              | 
+ bc_score                    | integer                  |           |          |--More--                   | plain    |             |              | 
+--More-- 
