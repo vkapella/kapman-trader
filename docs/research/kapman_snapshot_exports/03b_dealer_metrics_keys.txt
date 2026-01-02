@@ -1,0 +1,23 @@
+   jsonb_object_keys    
+------------------------
+ call_walls
+ confidence
+ dgpi
+ eligible_options_count
+ failure_reason
+ gamma_flip
+ gex_net
+ gex_slope
+ gex_total
+ metadata
+ position
+ primary_call_wall
+ primary_put_wall
+ put_walls
+ spot_price
+ spot_price_source
+ status
+ total_options_count
+ wall_config
+(19 rows)
+

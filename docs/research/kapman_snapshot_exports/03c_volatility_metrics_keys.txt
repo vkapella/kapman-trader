@@ -1,0 +1,11 @@
+   jsonb_object_keys   
+-----------------------
+ confidence
+ diagnostics
+ metadata
+ metrics
+ options_snapshot_time
+ processing_status
+ status
+(7 rows)
+

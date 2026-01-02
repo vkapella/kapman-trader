@@ -72,7 +72,7 @@ docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d ka
 Canonical OHLCV ingestion pipeline (A0). Reads Polygon S3 flat files and upserts into public.ohlcv.
 
 python -m scripts.ingest_ohlcv
-python -m scripts.ingest_ohlcv base 
+python -m scripts.ingest_ohlcv base --days 1 --as-of <yesterdays date> #loads 1 day through yesterday
 
 usage: ingest_ohlcv.py [-h] [--db-url DB_URL] {base,incremental,backfill} ...
 
@@ -87,16 +87,32 @@ optional arguments:
   -h, --help            # show this help message and exit
   --db-url DB_URL       # Overrides DATABASE_URL (default: env DATABASE_URL)
 
+* base *
 base option arguments:
   -h, --help            # show this help message and exit
-  --db-url DB_URL       # Overrides DATABASE_URL (default: env DATABASE_URL)
-  --verbosity {quiet,normal,debug} Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
+  --db-url DB_URL                      # Overrides DATABASE_URL (default: env DATABASE_URL)
+  --verbosity {quiet,normal,debug}     # Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
   --max-symbol-sample MAX_SYMBOL_SAMPLE #Max symbols to show when samples are printed (debug only; default: 10)
-  --symbols SYMBOLS     #Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
-  --strict-missing-symbols #Fail if flatfile contains symbols missing from tickers (default: base load skips missing symbols)
-  --no-ticker-bootstrap    #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
-  --days DAYS           #Number of available daily files to ingest (default: OHLCV_HISTORY_DAYS or 730)
-  --as-of AS_OF         #Latest date to consider (default: yesterday)
+  --symbols SYMBOLS                  #Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
+  --strict-missing-symbols           #Fail if flatfile contains symbols missing from tickers (default: base load skips missing symbols)
+  --no-ticker-bootstrap              #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
+  --days DAYS                        #Number of available daily files to ingest (default: OHLCV_HISTORY_DAYS or 730)
+  --as-of AS_OF                      #Latest date to consider (default: yesterday)
+
+* backfill *
+
+usage: ingest_ohlcv.py backfill [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] [--no-ticker-bootstrap] --start START --end END
+
+optional arguments:
+  -h, --help                              # show this help message and exit
+  --db-url DB_URL                         # Overrides DATABASE_URL (default: env DATABASE_URL)
+  --verbosity {quiet,normal,debug}        # Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
+  --max-symbol-sample MAX_SYMBOL_SAMPLE   #Max symbols to show when samples are printed (debug only; default: 10)
+  --symbols SYMBOLS                       #Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
+  --strict-missing-symbols                #Fail if flatfile contains symbols missing from tickers (default: base load skips missing symbols)
+  --no-ticker-bootstrap                   #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
+  --start START                           # Start date (YYYY-MM-DD)
+  --end END                               # End date (YYYY-MM-DD)
 
 ## Ingest OHLCV Dashboard
 
@@ -114,24 +130,24 @@ python -m scripts.ingest_options --symbols AVGO --concurrency 1 #avoid overrunin
 usage: ingest_options.py [-h] [--db-url DB_URL] [--api-key API_KEY] [--as-of AS_OF] [--snapshot-time SNAPSHOT_TIME] [--start-date START_DATE] [--end-date END_DATE] [--concurrency CONCURRENCY] [--symbols SYMBOLS] [--provider {unicorn,polygon}] [--large-symbols LARGE_SYMBOLS] [--log-level {DEBUG,INFO,WARNING,ERROR}] [--verbose] [--quiet] [--heartbeat HEARTBEAT] [--run-id RUN_ID] [--emit-summary] [--dry-run]
 
 optional arguments:
-  -h, --help            #show this help message and exit
-  --db-url DB_URL               #Overrides DATABASE_URL (default: env DATABASE_URL)
-  --api-key API_KEY               #Overrides provider API key (default: env POLYGON_API_KEY or UNICORN_API_TOKEN depending on provider)
-  --as-of AS_OF                   #Provider as_of date (YYYY-MM-DD)
-  --snapshot-time SNAPSHOT_TIME   #Snapshot time used for idempotent re-runs (ISO-8601; default: now UTC)
-  --start-date START_DATE         #Start date for range-mode historical ingestion (YYYY-MM-DD)
-  --end-date END_DATE             #End date for range-mode historical ingestion (inclusive, YYYY-MM-DD)
-  --concurrency CONCURRENCY       #Max concurrent symbols (default: 5)
-  --symbols SYMBOLS               #Comma-separated subset of symbols (still intersected with active watchlists)
-  --provider {unicorn,polygon}    #Options provider (override env OPTIONS_PROVIDER; default: unicorn)
-  --large-symbols LARGE_SYMBOLS   #Comma-separated symbols that should be ingested serially (default: AAPL,MSFT,NVDA,TSLA)
+  -h, --help                     #show this help message and exit
+  --db-url DB_URL                #Overrides DATABASE_URL (default: env DATABASE_URL)
+  --api-key API_KEY              #Overrides provider API key (default: env POLYGON_API_KEY or UNICORN_API_TOKEN depending on provider)
+  --as-of AS_OF                  #Provider as_of date (YYYY-MM-DD)
+  --snapshot-time SNAPSHOT_TIME  #Snapshot time used for idempotent re-runs (ISO-8601; default: now UTC)
+  --start-date START_DATE        #Start date for range-mode historical ingestion (YYYY-MM-DD)
+  --end-date END_DATE            #End date for range-mode historical ingestion (inclusive, YYYY-MM-DD)
+  --concurrency CONCURRENCY      #Max concurrent symbols (default: 5)
+  --symbols SYMBOLS              #Comma-separated subset of symbols (still intersected with active watchlists)
+  --provider {unicorn,polygon}   #Options provider (override env OPTIONS_PROVIDER; default: unicorn)
+  --large-symbols LARGE_SYMBOLS  #Comma-separated symbols that should be ingested serially (default: AAPL,MSFT,NVDA,TSLA)
   --log-level {DEBUG,INFO,WARNING,ERROR} #Overrides the default logging level (default: INFO)
-  --verbose             #Shorthand for --log-level DEBUG
-  --quiet               #Suppress INFO logs (overrides --log-level unless DEBUG explicitly set)
-  --heartbeat HEARTBEAT #Emit a heartbeat log every N symbols processed (default: 25)
-  --run-id RUN_ID       #Optional run identifier for observability and tracing
-  --emit-summary        #Emit a structured INFO summary at the end of the run
-  --dry-run             #Resolve symbols and scheduling 
+  --verbose                      #Shorthand for --log-level DEBUG
+  --quiet                        #Suppress INFO logs (overrides --log-level unless DEBUG explicitly set)
+  --heartbeat HEARTBEAT          #Emit a heartbeat log every N symbols processed (default: 25)
+  --run-id RUN_ID                #Optional run identifier for observability and tracing
+  --emit-summary                 #Emit a structured INFO summary at the end of the run
+  --dry-run                      #Resolve symbols and scheduling 
 
 
 

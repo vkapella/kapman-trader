@@ -3,6 +3,8 @@
 Status Note (as of Jan 2026):
 This roadmap reflects the original MVP execution plan. Several sections (notably Section 2 and Slice A of Section 4) are now substantially complete in implementation, even where individual FR coverage statuses have not yet been updated. This document is maintained to track remaining work, not to re-litigate completed scope.
 
+Status Note (as of Jan 1 2026):
+Slice B is now complete. Beginning Slice 3
 
 ## Purpose
 
@@ -152,9 +154,9 @@ For each symbol and trading day, compute and persist a single Wyckoff regime cla
 Detect and persist canonical Wyckoff structural events (SC, BC, AR, AR_TOP, SPRING, UT, SOS, SOW) with event date, type, and validation metadata. Events are sparse, path-dependent, and may only occur once per symbol per structural phase. Event detection logic must conform to the research-validated benchmark behavior.   → *Closes FR-008* → *Issue ID: B2*
 
 ### Recommendations
-- **S-AI-01** - Deterministic Claude interface & contract → *Closes FR-09* → *Issue ID: C3*
-- **S-REC-02** — Strike/expiration validator (real strikes only) → *Closes FR-010* → *Issue ID: C1*
-- **S-REC-01** — Recommendation persistence (Claude output) → *Closes FR-009* → *Issue ID: C2*
+- **S-AI-01** - Deterministic AIinterface & contract → *Closes FR-09* → *Issue ID: C1*
+- **S-REC-02** — Strike/expiration validator (real strikes only) → *Closes FR-010* → *Issue ID: C3*
+- **S-REC-01** — Recommendation persistence (AI output) → *Closes FR-009* → *Issue ID: C2*
 
 ### Feedback Loop
 - **S-FB-01** — Outcome evaluation (+5/+10/+20 days) → *Closes FR-013* → *Issue ID: D1*
@@ -211,6 +213,7 @@ These capabilities are research-validated but intentionally deferred to later sl
 ---
 
 ### Slice C — Recommendation Integrity
+- S-AI-01 
 - S-REC-02
 - S-REC-01
 
