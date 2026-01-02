@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 import json
 import logging
 import sys
@@ -11,67 +10,52 @@ def _add_repo_root() -> None:
     sys.path.insert(0, str(repo_root))
 
 
-def _build_request_payload() -> dict:
+def _build_snapshot_payload() -> dict:
     return {
-        "context": {
-            "symbol": "AAPL",
-            "snapshot_time": "2025-01-15",
-            "market_structure": {
-                "wyckoff_regime": "MARKUP",
-                "wyckoff_events": ["SOS"],
-                "regime_confidence": 0.82,
-            },
-            "technical_summary": {"adx": 28, "momentum_slope": 0.4},
-            "volatility_summary": {"iv_rank": 55, "iv_regime": "MID"},
-            "dealer_summary": {"gamma_flip_level": 182.5, "net_gex": 1000000},
+        "symbol": "AAPL",
+        "snapshot_time": "2025-01-15",
+        "market_structure": {
+            "wyckoff_regime": "MARKUP",
+            "wyckoff_events": ["SOS"],
+            "regime_confidence": 0.82,
         },
-        "option_context": {
-            "spot_price": 185.2,
-            "expiration_buckets": ["short", "medium"],
-            "moneyness_bands": ["ATM", "slightly_OTM"],
-            "liquidity_constraints": {"min_open_interest": 500, "min_volume": 100},
-        },
-        "authority_constraints": {
-            "wyckoff_veto": False,
-            "iv_forbids_long_premium": False,
-            "dealer_timing_veto": False,
-        },
-        "instructions": {
-            "objective": "produce ranked trade recommendations",
-            "forbidden_actions": [
-                "assume strike existence",
-                "assume expiration existence",
-                "claim executability",
-            ],
+        "technical_summary": {"adx": 28, "momentum_slope": 0.4},
+        "volatility_summary": {"iv_rank": 55, "iv_regime": "MID"},
+        "dealer_summary": {"gamma_flip_level": 182.5, "net_gex": 1000000},
+        "data_completeness_flags": {
+            "technical_summary": "COMPUTED",
+            "volatility_summary": "COMPUTED",
+            "dealer_summary": "COMPUTED",
         },
     }
 
 
-def _model_dump(value):
-    if hasattr(value, "model_dump"):
-        return value.model_dump()
-    if hasattr(value, "dict"):
-        return value.dict()
-    return value
-
-
-async def _run(args: argparse.Namespace) -> None:
-    from core.providers.ai.base import invoke_planning_agent
-
-    request_payload = _build_request_payload()
-    invocation_config = {
-        "ai_debug": args.debug,
-        "ai_dry_run": args.dry_run,
-        "model_version": "dev-runner",
+def _build_option_context() -> dict:
+    return {
+        "spot_price": 185.2,
+        "expiration_buckets": ["short", "medium"],
+        "moneyness_bands": ["ATM", "slightly_OTM"],
+        "liquidity_constraints": {"min_open_interest": 500, "min_volume": 100},
     }
-    response = await invoke_planning_agent(
-        provider_id=args.provider,
-        model_id=args.model,
-        request_payload=request_payload,
-        invocation_config=invocation_config,
-    )
-    payload = _model_dump(response)
-    print(json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")))
+
+
+def _build_authority_constraints() -> dict:
+    return {
+        "wyckoff_veto": False,
+        "iv_forbids_long_premium": False,
+        "dealer_timing_veto": False,
+    }
+
+
+def _build_instructions() -> dict:
+    return {
+        "objective": "produce ranked trade recommendations",
+        "forbidden_actions": [
+            "assume strike existence",
+            "assume expiration existence",
+            "claim executability",
+        ],
+    }
 
 
 def main() -> None:
@@ -86,7 +70,21 @@ def main() -> None:
         logging.basicConfig(level=logging.INFO)
 
     _add_repo_root()
-    asyncio.run(_run(args))
+    from core.providers.ai.invoke import invoke_planning_agent
+
+    response = invoke_planning_agent(
+        provider_id=args.provider,
+        model_id=args.model,
+        snapshot_payload=_build_snapshot_payload(),
+        option_context=_build_option_context(),
+        authority_constraints=_build_authority_constraints(),
+        instructions=_build_instructions(),
+        prompt_version="dev-runner-v1",
+        kapman_model_version="dev-runner",
+        debug=args.debug,
+        dry_run=args.dry_run,
+    )
+    print(json.dumps(response, sort_keys=True, ensure_ascii=True, separators=(",", ":")))
 
 
 if __name__ == "__main__":
