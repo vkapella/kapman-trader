@@ -133,6 +133,19 @@ def classify_dealer_status(
     return "INVALID", "criteria_not_met"
 
 
+def _snapshot_time_end_of_day_utc(snapshot_date: date) -> datetime:
+    return datetime(
+        year=snapshot_date.year,
+        month=snapshot_date.month,
+        day=snapshot_date.day,
+        hour=23,
+        minute=59,
+        second=59,
+        microsecond=999999,
+        tzinfo=timezone.utc,
+    )
+
+
 def _resolve_snapshot_time(conn, provided: Optional[datetime]) -> Optional[datetime]:
     if provided is not None:
         if provided.tzinfo is None:
@@ -147,7 +160,7 @@ def _resolve_snapshot_time(conn, provided: Optional[datetime]) -> Optional[datet
     ts: datetime = row[0]
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
-    return ts
+    return _snapshot_time_end_of_day_utc(ts.date())
 
 
 def resolve_effective_trading_date(conn, snapshot_time: datetime) -> Optional[date]:
@@ -538,6 +551,7 @@ def run_dealer_metrics_job(
     if snapshot_ts is None:
         log.warning("[A3] No options_chains snapshots found; nothing to compute")
         return {"tickers": 0, "processed": 0, "success": 0, "failed": 0, "duration_sec": 0.0}
+    log.info("[A3] dealer metrics snapshot_time=%s", snapshot_ts.isoformat())
     snapshot_date = snapshot_ts.date()
 
     tickers = _fetch_watchlist_tickers(conn)
