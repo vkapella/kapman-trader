@@ -1,86 +1,60 @@
 import pytest
-from unittest.mock import patch, MagicMock
-from core.providers.ai.base import AnalysisContext, Recommendation
-from core.providers.ai.claude import ClaudeProvider
-import json
+
+from core.providers.ai.base import (
+    AIRequest,
+    invoke_planning_agent,
+)
+
 
 @pytest.mark.asyncio
-class TestClaudeProvider:
-    @pytest.fixture
-    def test_context(self):
-        """Fixture for test AnalysisContext."""
-        return AnalysisContext(
-            symbol="AAPL",
-            wyckoff_phase="Phase B",
-            phase_confidence=85,
-            events_detected=["Spring", "Test"],
-            bc_data={"phase": "accumulation", "sentiment": "bullish"},
-            available_strikes=[150.0, 155.0, 160.0],
-            available_expirations=["2025-12-15", "2025-12-22"],
-            bc_score=80,
-            spring_score=70,
-            technical_indicators={"rsi": 65, "macd": "bullish"},
-            dealer_metrics={"inventory": "high", "positioning": "long"}
-        )
-
-    @pytest.fixture
-    def test_recommendation(self):
-        """Fixture for test Recommendation."""
-        return Recommendation(
-            symbol="AAPL",
-            direction="LONG",
-            action="BUY",
-            strategy="Wyckoff Spring",
-            entry_target=150.0,
-            stop_loss=145.0,
-            profit_target=165.0,
-            justification="Test justification",
-            confidence=0.9
-        )
-
-    @pytest.fixture
-    def provider(self):
-        """Fixture for ClaudeProvider instance."""
-        return ClaudeProvider(api_key="test-key")
-
-    @pytest.mark.unit
-    async def test_generate_justification(self, provider, test_context, test_recommendation):
-        """Test generating a justification."""
-        # Create a mock response for the synchronous API call
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Test justification")]
-        
-        with patch.object(provider.client.messages, 'create', return_value=mock_response) as mock_create:
-            result = await provider.generate_justification(
-                recommendation=test_recommendation,
-                context=test_context
-            )
-            assert "Test justification" in result
-            mock_create.assert_called_once()
-
-    @pytest.mark.unit
-    async def test_generate_recommendation(self, provider, test_context):
-        """Test generating a recommendation."""
-        # Create a properly formatted JSON string for the mock response
-        recommendation_data = {
+async def test_invoke_planning_agent_dry_run():
+    request = AIRequest(
+        context={
             "symbol": "AAPL",
-            "direction": "LONG",
-            "action": "BUY",
-            "strategy": "Wyckoff Spring",
-            "entry_target": 150.0,
-            "stop_loss": 145.0,
-            "profit_target": 165.0,
-            "justification": "Test justification",
-            "confidence": 0.9
-        }
-        
-        # Create a mock response for the synchronous API call
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text=json.dumps(recommendation_data))]
-        
-        with patch.object(provider.client.messages, 'create', return_value=mock_response) as mock_create:
-            result = await provider.generate_recommendation(context=test_context)
-            assert isinstance(result, Recommendation)
-            assert result.symbol == "AAPL"
-            assert result.direction == "LONG"
-            mock_create.assert_called_once()
+            "snapshot_time": "2025-01-15",
+            "market_structure": {
+                "wyckoff_regime": "MARKUP",
+                "wyckoff_events": ["SOS"],
+                "regime_confidence": 0.82,
+            },
+            "technical_summary": {"adx": 28},
+            "volatility_summary": {"iv_rank": 85},
+            "dealer_summary": {},
+        },
+        option_context={
+            "spot_price": 185.5,
+            "expiration_buckets": ["short", "medium"],
+            "moneyness_bands": ["ATM", "slightly_OTM"],
+            "liquidity_constraints": {"min_open_interest": 500, "min_volume": 100},
+        },
+        authority_constraints={
+            "wyckoff_veto": False,
+            "iv_forbids_long_premium": True,
+            "dealer_timing_veto": False,
+        },
+        instructions={
+            "objective": "produce ranked trade recommendations",
+            "forbidden_actions": [
+                "assume strike existence",
+                "assume expiration existence",
+                "claim executability",
+            ],
+        },
+    )
+
+    output = await invoke_planning_agent(
+        provider_id="anthropic",
+        model_id="claude-sonnet-4-20250514",
+        request_payload=request,
+        invocation_config={
+            "ai_debug": False,
+            "ai_dry_run": True,
+            "model_version": "test-version",
+        },
+    )
+
+    assert output.snapshot_metadata.ticker == "AAPL"
+    assert output.snapshot_metadata.ai_provider == "anthropic"
+    assert output.primary_recommendation.action.value in {"NO_TRADE", "WAIT"}
+    assert output.guardrails_and_disclaimers
+    assert output.missing_data_declaration

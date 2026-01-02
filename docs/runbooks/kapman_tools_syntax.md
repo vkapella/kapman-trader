@@ -305,3 +305,22 @@ optional arguments:
   --bench-dir BENCH_DIR   #Directory containing benchmark outputs
   --output-dir OUTPUT_DIR #Directory to write comparison outputs
   --verbose-metrics       #Enable verbose progress metrics logging
+
+
+## Test Live Calls to AI Providers
+
+
+Slice C AI dev runner
+
+python tools/ai_dev_runner.py --provider anthropic --model claude-opus-4-5 --debug
+python tools/ai_dev_runner.py --provider openai --model gpt-5.2-2025-12-11 --debug
+
+usage: ai_dev_runner.py [-h] --provider {anthropic,openai} --model MODEL [--debug] [--dry-run]
+
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --provider {anthropic,openai}
+  --model MODEL
+  --debug
+  --dry-run

@@ -4,6 +4,7 @@ from .market_data.base import MarketDataProvider, ProviderInfo
 from .market_data.polygon_s3 import PolygonS3Provider
 from .ai.base import AIProvider
 from .ai.claude import ClaudeProvider
+from .ai.openai import OpenAIProvider
 
 def get_market_data_provider(provider_type: str = "polygon_s3", **kwargs) -> MarketDataProvider:
     """
@@ -31,7 +32,7 @@ def get_market_data_provider(provider_type: str = "polygon_s3", **kwargs) -> Mar
     
     return provider_class(**filtered_kwargs)
 
-def get_ai_provider(provider_type: str = "claude", **kwargs) -> AIProvider:
+def get_ai_provider(provider_type: str = "anthropic", **kwargs) -> AIProvider:
     """
     Factory function to get an AI provider instance.
     
@@ -43,10 +44,12 @@ def get_ai_provider(provider_type: str = "claude", **kwargs) -> AIProvider:
         An instance of the specified AI provider.
     """
     providers = {
-        "claude": ClaudeProvider
+        "anthropic": ClaudeProvider,
+        "openai": OpenAIProvider,
     }
     
-    provider_class = providers.get(provider_type.lower())
+    provider_key = provider_type.lower()
+    provider_class = providers.get(provider_key)
     if not provider_class:
         raise ValueError(f"Unknown AI provider: {provider_type}")
     
@@ -70,5 +73,6 @@ __all__ = [
     
     # Provider implementations
     'PolygonS3Provider',
-    'ClaudeProvider'
+    'ClaudeProvider',
+    'OpenAIProvider'
 ]
