@@ -4,10 +4,11 @@ import argparse
 import logging
 import multiprocessing
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 
 import psycopg2
 
+import core.metrics.a2_local_ta_job as a2_job
 from core.ingestion.ohlcv.db import default_db_url
 from core.metrics.a2_local_ta_job import (
     DEFAULT_MODEL_VERSION,
@@ -54,6 +55,19 @@ def _parse_date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as e:
         raise argparse.ArgumentTypeError(f"Invalid date: {value} (expected YYYY-MM-DD)") from e
+
+
+def _resolve_snapshot_time(trading_date: date) -> datetime:
+    return datetime(
+        year=trading_date.year,
+        month=trading_date.month,
+        day=trading_date.day,
+        hour=23,
+        minute=59,
+        second=59,
+        microsecond=999999,
+        tzinfo=timezone.utc,
+    )
 
 
 def _ohlcv_dates_in_range(conn, start: date, end: date) -> list[date]:
@@ -202,6 +216,15 @@ def main(argv: list[str]) -> int:
             snapshot_mode = "single_date"
             run_date = latest
             dates = [latest]
+
+        a2_job._snapshot_time_utc = _resolve_snapshot_time
+        for trading_date in dates:
+            snapshot_time = _resolve_snapshot_time(trading_date)
+            log.info(
+                "A2 resolved snapshot_time=%s for trading_date=%s",
+                snapshot_time.isoformat(),
+                trading_date.isoformat(),
+            )
 
         plan = build_snapshot_ticker_plan(conn, snapshot_dates=dates, fill_missing=bool(args.fill_missing))
         total_tickers_all_dates = sum(len(v) for v in plan.values())
