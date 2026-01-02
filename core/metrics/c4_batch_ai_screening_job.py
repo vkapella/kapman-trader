@@ -8,12 +8,15 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 import psycopg2
+from psycopg2.extras import execute_values
 
 from core.ingestion.options.db import default_db_url
 from core.providers.ai.invoke import invoke_planning_agent
@@ -226,6 +229,267 @@ def _resolve_spot_price(*, dealer_summary: Any, price_summary: Any) -> Optional[
     return _first_float(price_summary, ("close", "spot", "price", "last"))
 
 
+def _normalize_recommendation_direction(value: Any) -> str:
+    if value is None:
+        return "NEUTRAL"
+    text = str(value).strip().upper()
+    if text == "BULLISH":
+        return "LONG"
+    if text == "BEARISH":
+        return "SHORT"
+    if text == "NEUTRAL":
+        return "NEUTRAL"
+    return "NEUTRAL"
+
+
+def _normalize_strategy_class(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    return text or None
+
+
+def _normalize_recommendation_action(action: Any, direction: str, strategy_class: Optional[str]) -> str:
+    if action is None:
+        return "HOLD"
+    text = str(action).strip().upper()
+    if text == "ENTER":
+        if strategy_class == "HEDGE_OVERLAY":
+            return "HEDGE"
+        if direction == "SHORT":
+            return "SELL"
+        if direction == "LONG":
+            return "BUY"
+        return "HOLD"
+    if text in {"WAIT", "DEFER", "NO_TRADE"}:
+        return "HOLD"
+    return "HOLD"
+
+
+def _normalize_option_strategy(strategy_class: Optional[str]) -> Optional[str]:
+    if not strategy_class:
+        return None
+    if strategy_class in {"LONG_CALL", "LONG_PUT", "CSP"}:
+        return strategy_class
+    if strategy_class in {"CALL_DEBIT_SPREAD", "PUT_DEBIT_SPREAD"}:
+        return "VERTICAL_SPREAD"
+    return None
+
+
+def _normalize_confidence(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        score = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    normalized = score / Decimal("100")
+    if normalized < 0 or normalized > 1:
+        return None
+    return normalized.quantize(Decimal("0.001"))
+
+
+def _normalize_option_strike(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value)).quantize(Decimal("0.0001"))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _normalize_option_expiration(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            if "T" in text:
+                return datetime.fromisoformat(text).date()
+            return date.fromisoformat(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_option_type(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    if text in {"C", "CALL"}:
+        return "C"
+    if text in {"P", "PUT"}:
+        return "P"
+    return None
+
+
+def _format_decimal(value: Optional[Decimal]) -> Optional[str]:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _recommendation_identity_payload(
+    *,
+    symbol: str,
+    snapshot_time: datetime,
+    provider_key: str,
+    ai_model: str,
+    action: str,
+    direction: str,
+    strategy_class: Optional[str],
+    option_expiration: Optional[date],
+    option_strike: Optional[Decimal],
+    option_type: Optional[str],
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol.upper(),
+        "snapshot_time": snapshot_time.isoformat(),
+        "provider": provider_key,
+        "model": ai_model,
+        "action": action,
+        "direction": direction,
+        "strategy_class": strategy_class,
+        "option_expiration": option_expiration.isoformat() if option_expiration else None,
+        "option_strike": _format_decimal(option_strike),
+        "option_type": option_type,
+    }
+
+
+def _deterministic_recommendation_id(payload: dict[str, Any]) -> str:
+    identity = _canonical_json(payload)
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
+
+
+def _build_recommendation_row(
+    *,
+    ticker_id: str,
+    symbol: str,
+    snapshot_time: datetime,
+    provider_key: str,
+    ai_model: str,
+    response: dict[str, Any],
+) -> Optional[tuple]:
+    metadata = response.get("snapshot_metadata") or {}
+    ticker = metadata.get("ticker")
+    if not isinstance(ticker, str) or ticker.upper() == "UNKNOWN":
+        return None
+    primary = response.get("primary_recommendation")
+    if not isinstance(primary, dict):
+        return None
+
+    strategy_class = _normalize_strategy_class(primary.get("strategy_class"))
+    direction = _normalize_recommendation_direction(primary.get("direction"))
+    action = _normalize_recommendation_action(primary.get("action"), direction, strategy_class)
+    confidence = _normalize_confidence(primary.get("confidence_score"))
+    rationale = primary.get("rationale_summary")
+    justification = rationale if isinstance(rationale, str) else (None if rationale is None else str(rationale))
+    option_strike = _normalize_option_strike(primary.get("option_strike"))
+    option_expiration = _normalize_option_expiration(primary.get("option_expiration"))
+    option_type = _normalize_option_type(primary.get("option_type"))
+    option_strategy = _normalize_option_strategy(strategy_class)
+
+    identity_payload = _recommendation_identity_payload(
+        symbol=symbol,
+        snapshot_time=snapshot_time,
+        provider_key=provider_key,
+        ai_model=ai_model,
+        action=action,
+        direction=direction,
+        strategy_class=strategy_class,
+        option_expiration=option_expiration,
+        option_strike=option_strike,
+        option_type=option_type,
+    )
+    recommendation_id = _deterministic_recommendation_id(identity_payload)
+    model_version = metadata.get("model_version") or MODEL_VERSION
+    created_at = datetime.now(timezone.utc)
+
+    return (
+        recommendation_id,
+        snapshot_time,
+        ticker_id,
+        snapshot_time.date(),
+        direction,
+        action,
+        confidence,
+        justification,
+        None,
+        None,
+        None,
+        None,
+        option_strike,
+        option_expiration,
+        option_type,
+        option_strategy,
+        "active",
+        model_version,
+        created_at,
+    )
+
+
+def _persist_recommendations(
+    conn,
+    *,
+    rows: Sequence[tuple],
+    dry_run: bool,
+    batch_size: int = 200,
+) -> int:
+    if dry_run or not rows:
+        return 0
+
+    insert_sql = """
+        INSERT INTO recommendations (
+            id,
+            snapshot_time,
+            ticker_id,
+            recommendation_date,
+            direction,
+            action,
+            confidence,
+            justification,
+            entry_price_target,
+            stop_loss,
+            profit_target,
+            risk_reward_ratio,
+            option_strike,
+            option_expiration,
+            option_type,
+            option_strategy,
+            status,
+            model_version,
+            created_at
+        )
+        VALUES %s
+        ON CONFLICT (id) DO NOTHING
+    """
+
+    total = 0
+    try:
+        with conn.cursor() as cur:
+            for i in range(0, len(rows), batch_size):
+                batch = rows[i : i + batch_size]
+                execute_values(cur, insert_sql, batch, page_size=len(batch))
+                total += cur.rowcount if cur.rowcount is not None else 0
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return total
+
+
+def _log_error(log: logging.Logger, event: str, payload: dict[str, Any]) -> None:
+    entry = {"event": event}
+    entry.update(payload)
+    log.error(_canonical_json(entry))
+
+
 def _data_completeness_flags(
     *,
     technical_summary: Any,
@@ -364,6 +628,7 @@ def run_batch_ai_screening(
     total_batches = len(batches)
 
     for batch_index, batch in enumerate(batches, start=1):
+        batch_rows: list[tuple] = []
         _log_event(
             log,
             "batch_start",
@@ -491,6 +756,18 @@ def run_batch_ai_screening(
                     dry_run=dry_run,
                 )
 
+                if not dry_run:
+                    row = _build_recommendation_row(
+                        ticker_id=ticker_id,
+                        symbol=symbol,
+                        snapshot_time=snapshot_ts,
+                        provider_key=provider_key,
+                        ai_model=ai_model,
+                        response=response,
+                    )
+                    if row is not None:
+                        batch_rows.append(row)
+
                 reason = _extract_failure_reason(response)
                 if reason:
                     classification = _classify_failure(reason)
@@ -551,6 +828,32 @@ def run_batch_ai_screening(
                         },
                     )
                 break
+
+        if not dry_run:
+            try:
+                persisted = _persist_recommendations(conn, rows=batch_rows, dry_run=False)
+            except Exception as exc:
+                _log_error(
+                    log,
+                    "batch_persist_error",
+                    {
+                        "batch_id": batch_index,
+                        "batch_index": batch_index,
+                        "batch_total": total_batches,
+                        "error": str(exc),
+                    },
+                )
+                raise
+            _log_event(
+                log,
+                "batch_persisted",
+                {
+                    "batch_id": batch_index,
+                    "batch_index": batch_index,
+                    "batch_total": total_batches,
+                    "persisted_recommendations": persisted,
+                },
+            )
 
         _log_event(
             log,
