@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from unittest.mock import Mock
+from unittest.mock import MagicMock
 
 from core.metrics import c4_batch_ai_screening_job as c4_module
 
@@ -32,8 +32,8 @@ def _sample_row() -> tuple:
 
 
 def test_single_valid_recommendation_persists_successfully(monkeypatch) -> None:
-    conn = Mock()
-    cur = Mock()
+    conn = MagicMock()
+    cur = MagicMock()
     conn.cursor.return_value.__enter__.return_value = cur
 
     def _fake_execute_values(cursor, _sql, values, page_size=None) -> None:
@@ -50,8 +50,8 @@ def test_single_valid_recommendation_persists_successfully(monkeypatch) -> None:
 
 
 def test_duplicate_persistence_attempt_does_not_create_second_row(monkeypatch) -> None:
-    conn = Mock()
-    cur = Mock()
+    conn = MagicMock()
+    cur = MagicMock()
     conn.cursor.return_value.__enter__.return_value = cur
 
     def _fake_execute_values(cursor, _sql, _values, page_size=None) -> None:
@@ -68,7 +68,7 @@ def test_duplicate_persistence_attempt_does_not_create_second_row(monkeypatch) -
 
 
 def test_persistence_skipped_when_dry_run_enabled() -> None:
-    conn = Mock()
+    conn = MagicMock()
     rows = [_sample_row()]
 
     inserted = c4_module._persist_recommendations(conn, rows=rows, dry_run=True)
