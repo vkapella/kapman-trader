@@ -463,7 +463,7 @@ python -m scripts.run_a3_dealer_metrics --start-date 2025-12-15 --end-date 2025-
 
 **dealer-dashboard to check the success of dealer metrics calculation**
 
-docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < docs/runbooks/0003-A3-dealer_metrics_dashboard.sql
+docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < db/dashboards/0003-A3-dealer_metrics_dashboard.sql
 
 **dealer-dashboard to check the success of dealer metrics calculation** 
 
@@ -473,7 +473,7 @@ docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < docs/runbook
 
 **volatility-dashboard to check the success of volatility metrics calculation**
 
- docker exec -i kapman-db psql -U kapman -d kapman < docs/runbooks/0004-A4-volatility_metrics_dashboard.sql
+ docker exec -i kapman-db psql -U kapman -d kapman < db/dashboards/0004-A4-volatility_metrics_dashboard.sql
 
 **volatility-dashboard to check the success of volatility metrics calculation**
 
