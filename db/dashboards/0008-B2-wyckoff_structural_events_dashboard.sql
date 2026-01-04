@@ -1,183 +1,158 @@
 \echo '============================================================'
-\echo 'B4 WYCKOFF DERIVED – VALIDATION DASHBOARD'
+\echo 'B2 WYCKOFF STRUCTURAL EVENTS – VALIDATION DASHBOARD'
 \echo '============================================================'
 \echo ''
 
 /* ------------------------------------------------------------ */
-\echo '1) Global coverage for regime transitions'
+\echo '1) Global snapshot coverage for B2 structural events'
 \echo '   (How much data exists, date range, ticker coverage)'
 \echo '------------------------------------------------------------'
 SELECT
-  COUNT(*)                  AS total_transitions,
-  COUNT(DISTINCT ticker_id) AS tickers_with_transitions,
-  MIN(date)                 AS first_transition_date,
-  MAX(date)                 AS last_transition_date
-FROM wyckoff_regime_transitions;
+  COUNT(*)                       AS total_snapshots,
+  COUNT(DISTINCT ticker_id)      AS tickers_covered,
+  MIN(time)::date                AS first_date,
+  MAX(time)::date                AS last_date
+FROM daily_snapshots
+WHERE events_detected IS NOT NULL;
 
 \echo ''
 
 /* ------------------------------------------------------------ */
-\echo '2) Transition matrix (prior_regime -> new_regime)'
-\echo '   (Validates relative frequencies vs benchmark intuition)'
+\echo '2) Total occurrences by Wyckoff event code (all history)'
+\echo '   (Validates relative frequency vs research benchmark)'
 \echo '------------------------------------------------------------'
 SELECT
-  prior_regime,
-  new_regime,
-  COUNT(*) AS transition_count
-FROM wyckoff_regime_transitions
-GROUP BY prior_regime, new_regime
-ORDER BY transition_count DESC;
+  e.event_code,
+  COUNT(*) AS occurrences
+FROM daily_snapshots ds
+CROSS JOIN LATERAL unnest(ds.events_detected) AS e(event_code)
+GROUP BY e.event_code
+ORDER BY occurrences DESC;
 
 \echo ''
 
 /* ------------------------------------------------------------ */
-\echo '3) Transition occurrences restricted to active watchlist'
+\echo '3) Distinct tickers that have ever emitted each event'
+\echo '   (Coverage diagnostic: how many symbols participate)'
+\echo '------------------------------------------------------------'
+SELECT
+  e.event_code,
+  COUNT(DISTINCT ds.ticker_id) AS tickers_with_event
+FROM daily_snapshots ds
+CROSS JOIN LATERAL unnest(ds.events_detected) AS e(event_code)
+GROUP BY e.event_code
+ORDER BY tickers_with_event DESC;
+
+\echo ''
+
+/* ------------------------------------------------------------ */
+\echo '4) Event occurrences restricted to active watchlist'
 \echo '   (Operational relevance for current universe)'
 \echo '------------------------------------------------------------'
 SELECT
-  wrt.prior_regime,
-  wrt.new_regime,
-  COUNT(*) AS transition_count
-FROM wyckoff_regime_transitions wrt
+  e.event_code,
+  COUNT(*) AS occurrences
+FROM daily_snapshots ds
 JOIN tickers t
-  ON t.id = wrt.ticker_id
+  ON t.id = ds.ticker_id
 JOIN watchlists w
   ON UPPER(w.symbol) = UPPER(t.symbol)
+CROSS JOIN LATERAL unnest(ds.events_detected) AS e(event_code)
 WHERE w.active = TRUE
-GROUP BY wrt.prior_regime, wrt.new_regime
-ORDER BY transition_count DESC;
+GROUP BY e.event_code
+ORDER BY occurrences DESC;
 
 \echo ''
 
 /* ------------------------------------------------------------ */
-\echo '4) Per-ticker transition activity (top 25)'
-\echo '   (Find churners and validate symbol coverage)'
+\echo '5) Latest structural event per ticker'
+\echo '   (Ensures single-instance-per-event semantics hold)'
+\echo '------------------------------------------------------------'
+WITH exploded AS (
+  SELECT
+    ds.ticker_id,
+    ds.time,
+    e.event_code
+  FROM daily_snapshots ds
+  CROSS JOIN LATERAL unnest(ds.events_detected) AS e(event_code)
+),
+latest AS (
+  SELECT DISTINCT ON (ticker_id, event_code)
+    ticker_id,
+    event_code,
+    time
+  FROM exploded
+  ORDER BY ticker_id, event_code, time DESC
+)
+SELECT
+  event_code,
+  COUNT(*) AS tickers_with_latest_event
+FROM latest
+GROUP BY event_code
+ORDER BY tickers_with_latest_event DESC;
+
+\echo ''
+
+/* ------------------------------------------------------------ */
+\echo '6) Event co-occurrence sanity check (should be rare)'
+\echo '   (Counts bars with more than one structural event)'
 \echo '------------------------------------------------------------'
 SELECT
-  t.symbol,
-  COUNT(*)      AS transition_count,
-  MIN(wrt.date) AS first_transition,
-  MAX(wrt.date) AS last_transition
-FROM wyckoff_regime_transitions wrt
-JOIN tickers t
-  ON t.id = wrt.ticker_id
-GROUP BY t.symbol
-ORDER BY transition_count DESC, t.symbol
-LIMIT 25;
+  COUNT(*) AS bars_with_multiple_events
+FROM daily_snapshots
+WHERE events_detected IS NOT NULL
+  AND array_length(events_detected, 1) > 1;
 
 \echo ''
 
 /* ------------------------------------------------------------ */
-\echo '5) Duration stats (bars) by new_regime'
-\echo '   (Sanity check on regime persistence metrics)'
-\echo '------------------------------------------------------------'
-SELECT
-  new_regime,
-  COUNT(*)                         AS transitions,
-  AVG(duration_bars)::NUMERIC(6,2) AS avg_duration_bars,
-  MIN(duration_bars)               AS min_duration_bars,
-  MAX(duration_bars)               AS max_duration_bars
-FROM wyckoff_regime_transitions
-WHERE duration_bars IS NOT NULL
-GROUP BY new_regime
-ORDER BY transitions DESC;
-
-\echo ''
-
-/* ------------------------------------------------------------ */
-\echo '6) Evidence coverage for transitions'
-\echo '   (B4 writes evidence snapshots keyed by (ticker_id, date))'
-\echo '------------------------------------------------------------'
-SELECT
-  COUNT(*) AS transitions,
-  COUNT(e.ticker_id) AS transitions_with_evidence,
-  ROUND(
-    COUNT(e.ticker_id)::NUMERIC / NULLIF(COUNT(*), 0) * 100,
-    2
-  ) AS evidence_coverage_pct
-FROM wyckoff_regime_transitions wrt
-LEFT JOIN wyckoff_snapshot_evidence e
-  ON e.ticker_id = wrt.ticker_id
- AND e.date = wrt.date;
-
-\echo ''
-
-/* ------------------------------------------------------------ */
-\echo '7) Recent transitions (operator feed)'
-\echo '------------------------------------------------------------'
-SELECT
-  t.symbol,
-  wrt.date,
-  wrt.prior_regime,
-  wrt.new_regime,
-  wrt.duration_bars
-FROM wyckoff_regime_transitions wrt
-JOIN tickers t
-  ON t.id = wrt.ticker_id
-ORDER BY wrt.date DESC, t.symbol
-LIMIT 50;
-
-\echo ''
-
-/* ------------------------------------------------------------ */
-\echo '8) Transition density by calendar year'
-\echo '   (Checks temporal clustering and drift)'
-\echo '------------------------------------------------------------'
-SELECT
-  EXTRACT(YEAR FROM wrt.date) AS year,
-  wrt.prior_regime,
-  wrt.new_regime,
-  COUNT(*) AS transitions
-FROM wyckoff_regime_transitions wrt
-GROUP BY year, wrt.prior_regime, wrt.new_regime
-ORDER BY year, transitions DESC;
-
-\echo ''
-
-/* ------------------------------------------------------------ */
-\echo '9) Sequences and context events (should be 0 until enabled)'
-\echo '------------------------------------------------------------'
-SELECT
-  (SELECT COUNT(*) FROM wyckoff_sequences)       AS sequences_total,
-  (SELECT COUNT(*) FROM wyckoff_context_events)  AS context_events_total,
-  (SELECT COUNT(*) FROM wyckoff_snapshot_evidence) AS evidence_rows_total;
-
-\echo ''
-
-/* ------------------------------------------------------------ */
-\echo '10) Per-symbol drilldown (replace :symbol)'
-\echo '   Example usage:  \set symbol ''NVDA'''
+\echo '7) Event timeline sample for manual inspection'
+\echo '   (Replace :symbol with a real ticker symbol)'
 \echo '------------------------------------------------------------'
 -- Example usage:
 -- \set symbol 'NVDA'
-
-\echo '10a) Recent transitions for :symbol'
 SELECT
-  wrt.date,
-  wrt.prior_regime,
-  wrt.new_regime,
-  wrt.duration_bars
-FROM wyckoff_regime_transitions wrt
+  ds.time::date AS date,
+  e.event_code
+FROM daily_snapshots ds
 JOIN tickers t
-  ON t.id = wrt.ticker_id
+  ON t.id = ds.ticker_id
+CROSS JOIN LATERAL unnest(ds.events_detected) AS e(event_code)
 WHERE UPPER(t.symbol) = UPPER(:symbol)
-ORDER BY wrt.date DESC
-LIMIT 50;
+ORDER BY ds.time;
 
 \echo ''
 
-\echo '10b) Evidence presence for :symbol (last 50 evidence rows)'
+/* ------------------------------------------------------------ */
+\echo '8) Event density by calendar year'
+\echo '   (Checks temporal clustering and drift)'
+\echo '------------------------------------------------------------'
 SELECT
-  e.date,
-  jsonb_typeof(e.evidence_json) AS evidence_json_type
-FROM wyckoff_snapshot_evidence e
-JOIN tickers t
-  ON t.id = e.ticker_id
-WHERE UPPER(t.symbol) = UPPER(:symbol)
-ORDER BY e.date DESC
-LIMIT 50;
+  EXTRACT(YEAR FROM ds.time) AS year,
+  e.event_code,
+  COUNT(*) AS occurrences
+FROM daily_snapshots ds
+CROSS JOIN LATERAL unnest(ds.events_detected) AS e(event_code)
+GROUP BY year, e.event_code
+ORDER BY year, occurrences DESC;
+
+\echo ''
+
+/* ------------------------------------------------------------ */
+\echo '9) Structural event to regime alignment check'
+\echo '   (Ensures B2 events line up with B1 regime outcomes)'
+\echo '------------------------------------------------------------'
+SELECT
+  e.event_code,
+  ds.wyckoff_regime,
+  COUNT(*) AS occurrences
+FROM daily_snapshots ds
+CROSS JOIN LATERAL unnest(ds.events_detected) AS e(event_code)
+WHERE ds.wyckoff_regime IS NOT NULL
+GROUP BY e.event_code, ds.wyckoff_regime
+ORDER BY e.event_code, occurrences DESC;
 
 \echo ''
 \echo '============================================================'
-\echo 'END OF B4 WYCKOFF DERIVED DASHBOARD'
+\echo 'END OF B2 WYCKOFF STRUCTURAL EVENTS DASHBOARD'
 \echo '============================================================'

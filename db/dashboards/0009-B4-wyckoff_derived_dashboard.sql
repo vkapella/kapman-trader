@@ -115,11 +115,11 @@ ORDER BY year, transitions DESC;
 
 \echo ''
 
-\echo '9) Sequences and context events (expected 0 for now)'
+\echo '9) Sequences and context events'
 \echo '------------------------------------------------------------'
 SELECT
-  (SELECT COUNT(*) FROM wyckoff_sequences)         AS sequences_total,
-  (SELECT COUNT(*) FROM wyckoff_context_events)    AS context_events_total,
+  (SELECT COUNT(*) FROM public.wyckoff_sequences)       AS sequences_total,
+  (SELECT COUNT(*) FROM public.wyckoff_sequence_events) AS sequence_events_total,
   (SELECT COUNT(*) FROM wyckoff_snapshot_evidence) AS evidence_rows_total;
 
 \echo ''

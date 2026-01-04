@@ -288,7 +288,21 @@ optional arguments:
 
 docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman  -v symbol='NVDA'< db/dashboards/0009-B4-wyckoff_derived_dashboard.sql
 
+## Compute Wyckoff Sequences
 
+python -m scripts.run_b4_1_wyckoff_sequences --help
+
+usage: run_b4_1_wyckoff_sequences.py [-h] [--watchlist] [--start-date START_DATE] [--end-date END_DATE] [--verbose] [--heartbeat]
+
+KapMan B4.1: Persist canonical Wyckoff sequences (benchmark-validated)
+
+optional arguments:
+  -h, --help            # show this help message and exit
+  --watchlist           # Restrict to active watchlist symbols
+  --start-date START_DATE# Start date (YYYY-MM-DD)
+  --end-date END_DATE   # End date (YYYY-MM-DD)
+  --verbose             # Enable step-level logging
+  --heartbeat           # Emit periodic progress logs
 
 ## Utility to Produce Parquet of OHLCV for Wyckoff_fast_bench testing
 
@@ -344,7 +358,7 @@ usage: ai_dev_runner.py [-h] --provider {anthropic,openai} --model MODEL [--debu
 
 
 optional arguments:
-  -h, --help            show this help message and exit
+  -h, --help           show this help message and exit
   --provider {anthropic,openai}
   --model MODEL
   --debug

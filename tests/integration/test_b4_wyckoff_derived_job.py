@@ -52,36 +52,28 @@ def _seed_daily_snapshot(conn, *, ticker_id: str, snapshot_date: date, regime: s
     conn.commit()
 
 
-def _ensure_canonical_events_table(conn) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS wyckoff_canonical_events (
-                ticker_id UUID NOT NULL,
-                event_date DATE NOT NULL,
-                event_type VARCHAR(20) NOT NULL,
-                event_order INTEGER NOT NULL DEFAULT 0
-            )
-            """
-        )
-    conn.commit()
-
-
-def _seed_canonical_event(
+def _seed_context_event(
     conn,
     *,
     ticker_id: str,
     event_date: date,
     event_type: str,
-    event_order: int,
+    prior_regime: str,
+    context_label: str,
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO wyckoff_canonical_events (ticker_id, event_date, event_type, event_order)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO wyckoff_context_events (
+                ticker_id,
+                event_date,
+                event_type,
+                prior_regime,
+                context_label
+            )
+            VALUES (%s, %s, %s, %s, %s)
             """,
-            (ticker_id, event_date, event_type, event_order),
+            (ticker_id, event_date, event_type, prior_regime, context_label),
         )
     conn.commit()
 
@@ -105,17 +97,44 @@ def test_b4_end_to_end_and_idempotent() -> None:
     dates = [start_date + timedelta(days=offset) for offset in range(6)]
 
     with psycopg2.connect(db_url) as conn:
-        _ensure_canonical_events_table(conn)
         ticker_id = _insert_ticker(conn, "AAPL")
 
         for idx, snapshot_date in enumerate(dates):
             regime = "ACCUMULATION" if idx < 5 else "MARKUP"
             _seed_daily_snapshot(conn, ticker_id=ticker_id, snapshot_date=snapshot_date, regime=regime)
 
-        _seed_canonical_event(conn, ticker_id=ticker_id, event_date=dates[0], event_type="SC", event_order=1)
-        _seed_canonical_event(conn, ticker_id=ticker_id, event_date=dates[1], event_type="AR", event_order=2)
-        _seed_canonical_event(conn, ticker_id=ticker_id, event_date=dates[2], event_type="SPRING", event_order=3)
-        _seed_canonical_event(conn, ticker_id=ticker_id, event_date=dates[5], event_type="SOS", event_order=4)
+        _seed_context_event(
+            conn,
+            ticker_id=ticker_id,
+            event_date=dates[0],
+            event_type="SC",
+            prior_regime="ACCUMULATION",
+            context_label="SC_after_ACCUMULATION",
+        )
+        _seed_context_event(
+            conn,
+            ticker_id=ticker_id,
+            event_date=dates[1],
+            event_type="AR",
+            prior_regime="ACCUMULATION",
+            context_label="AR_after_ACCUMULATION",
+        )
+        _seed_context_event(
+            conn,
+            ticker_id=ticker_id,
+            event_date=dates[2],
+            event_type="SPRING",
+            prior_regime="ACCUMULATION",
+            context_label="SPRING_after_ACCUMULATION",
+        )
+        _seed_context_event(
+            conn,
+            ticker_id=ticker_id,
+            event_date=dates[5],
+            event_type="SOS",
+            prior_regime="ACCUMULATION",
+            context_label="SOS_after_ACCUMULATION",
+        )
 
         run_wyckoff_derived_job(conn, include_evidence=True)
 
