@@ -265,6 +265,31 @@ optional arguments:
 
 docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0007-B1-wyckoff_regime_dashboard.sql
 
+
+## Compute Wyckoff Derived
+
+KapMan B4: Persist derived Wyckoff transitions, sequences, and context events
+
+python -m scripts.run_b4_wyckoff_derived --help  
+usage: run_b4_wyckoff_derived.py [-h] [--watchlist] [--symbols SYMBOLS] [--start-date START_DATE] [--end-date END_DATE] [--verbose] [--heartbeat] [--include-evidence]
+
+optional arguments:
+  -h, --help              #show this help message and exit
+  --watchlist             #Restrict to active watchlist symbols
+  --symbols SYMBOLS       #Comma-separated symbols (e.g., AAPL,MSFT)
+  --start-date START_DATE #Start date (YYYY-MM-DD)
+  --end-date END_DATE     #End date (YYYY-MM-DD)
+  --verbose               #Enable step-level logging
+  --heartbeat             #Emit periodic progress logs
+  --include-evidence      #Persist per-day snapshot evidence block
+
+## Create Wyckoff Derived Dashboard
+
+
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman  -v symbol='NVDA'< db/dashboards/0009-B4-wyckoff_derived_dashboard.sql
+
+
+
 ## Utility to Produce Parquet of OHLCV for Wyckoff_fast_bench testing
 
 python -m scripts.benchmark_support.export_ohlcv_to_fast_bench_parquet 

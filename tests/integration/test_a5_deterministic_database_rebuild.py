@@ -18,6 +18,10 @@ EXPECTED_PUBLIC_TABLES: set[str] = {
     "ohlcv",
     "options_chains",
     "daily_snapshots",
+    "wyckoff_regime_transitions",
+    "wyckoff_sequences",
+    "wyckoff_context_events",
+    "wyckoff_snapshot_evidence",
     "recommendations",
     "recommendation_outcomes",
 }
@@ -207,6 +211,8 @@ def test_a5_deterministic_rebuild_and_baseline_invariants(test_db_url: str) -> N
         "0004_ohlcv_retention.sql",
         "0005_watchlists.sql",
         "0006_options_chains_timescaledb.sql",
+        "0007_wyckoff_regime.sql",
+        "0008_wyckoff_derived.sql",
     ]
 
     fingerprints: list[dict[str, Any]] = []

@@ -3,9 +3,7 @@
 \echo '============================================================'
 \echo ''
 
-/* ------------------------------------------------------------ */
 \echo '1) Global coverage for regime transitions'
-\echo '   (How much data exists, date range, ticker coverage)'
 \echo '------------------------------------------------------------'
 SELECT
   COUNT(*)                  AS total_transitions,
@@ -16,9 +14,7 @@ FROM wyckoff_regime_transitions;
 
 \echo ''
 
-/* ------------------------------------------------------------ */
 \echo '2) Transition matrix (prior_regime -> new_regime)'
-\echo '   (Validates relative frequencies vs benchmark intuition)'
 \echo '------------------------------------------------------------'
 SELECT
   prior_regime,
@@ -30,28 +26,22 @@ ORDER BY transition_count DESC;
 
 \echo ''
 
-/* ------------------------------------------------------------ */
 \echo '3) Transition occurrences restricted to active watchlist'
-\echo '   (Operational relevance for current universe)'
 \echo '------------------------------------------------------------'
 SELECT
   wrt.prior_regime,
   wrt.new_regime,
   COUNT(*) AS transition_count
 FROM wyckoff_regime_transitions wrt
-JOIN tickers t
-  ON t.id = wrt.ticker_id
-JOIN watchlists w
-  ON UPPER(w.symbol) = UPPER(t.symbol)
+JOIN tickers t ON t.id = wrt.ticker_id
+JOIN watchlists w ON UPPER(w.symbol) = UPPER(t.symbol)
 WHERE w.active = TRUE
 GROUP BY wrt.prior_regime, wrt.new_regime
 ORDER BY transition_count DESC;
 
 \echo ''
 
-/* ------------------------------------------------------------ */
 \echo '4) Per-ticker transition activity (top 25)'
-\echo '   (Find churners and validate symbol coverage)'
 \echo '------------------------------------------------------------'
 SELECT
   t.symbol,
@@ -59,17 +49,14 @@ SELECT
   MIN(wrt.date) AS first_transition,
   MAX(wrt.date) AS last_transition
 FROM wyckoff_regime_transitions wrt
-JOIN tickers t
-  ON t.id = wrt.ticker_id
+JOIN tickers t ON t.id = wrt.ticker_id
 GROUP BY t.symbol
 ORDER BY transition_count DESC, t.symbol
 LIMIT 25;
 
 \echo ''
 
-/* ------------------------------------------------------------ */
 \echo '5) Duration stats (bars) by new_regime'
-\echo '   (Sanity check on regime persistence metrics)'
 \echo '------------------------------------------------------------'
 SELECT
   new_regime,
@@ -84,9 +71,7 @@ ORDER BY transitions DESC;
 
 \echo ''
 
-/* ------------------------------------------------------------ */
 \echo '6) Evidence coverage for transitions'
-\echo '   (B4 writes evidence snapshots keyed by (ticker_id, date))'
 \echo '------------------------------------------------------------'
 SELECT
   COUNT(*) AS transitions,
@@ -102,7 +87,6 @@ LEFT JOIN wyckoff_snapshot_evidence e
 
 \echo ''
 
-/* ------------------------------------------------------------ */
 \echo '7) Recent transitions (operator feed)'
 \echo '------------------------------------------------------------'
 SELECT
@@ -112,16 +96,13 @@ SELECT
   wrt.new_regime,
   wrt.duration_bars
 FROM wyckoff_regime_transitions wrt
-JOIN tickers t
-  ON t.id = wrt.ticker_id
+JOIN tickers t ON t.id = wrt.ticker_id
 ORDER BY wrt.date DESC, t.symbol
 LIMIT 50;
 
 \echo ''
 
-/* ------------------------------------------------------------ */
 \echo '8) Transition density by calendar year'
-\echo '   (Checks temporal clustering and drift)'
 \echo '------------------------------------------------------------'
 SELECT
   EXTRACT(YEAR FROM wrt.date) AS year,
@@ -134,48 +115,49 @@ ORDER BY year, transitions DESC;
 
 \echo ''
 
-/* ------------------------------------------------------------ */
-\echo '9) Sequences and context events (should be 0 until enabled)'
+\echo '9) Sequences and context events (expected 0 for now)'
 \echo '------------------------------------------------------------'
 SELECT
-  (SELECT COUNT(*) FROM wyckoff_sequences)       AS sequences_total,
-  (SELECT COUNT(*) FROM wyckoff_context_events)  AS context_events_total,
+  (SELECT COUNT(*) FROM wyckoff_sequences)         AS sequences_total,
+  (SELECT COUNT(*) FROM wyckoff_context_events)    AS context_events_total,
   (SELECT COUNT(*) FROM wyckoff_snapshot_evidence) AS evidence_rows_total;
 
 \echo ''
 
-/* ------------------------------------------------------------ */
-\echo '10) Per-symbol drilldown (replace :symbol)'
-\echo '   Example usage:  \set symbol ''NVDA'''
+\echo '10) Per-symbol drilldown (optional)'
 \echo '------------------------------------------------------------'
--- Example usage:
--- \set symbol 'NVDA'
 
-\echo '10a) Recent transitions for :symbol'
+\if :{?symbol}
+
+\echo '10a) Recent transitions for symbol :'symbol''
 SELECT
   wrt.date,
   wrt.prior_regime,
   wrt.new_regime,
   wrt.duration_bars
 FROM wyckoff_regime_transitions wrt
-JOIN tickers t
-  ON t.id = wrt.ticker_id
-WHERE UPPER(t.symbol) = UPPER(:symbol)
+JOIN tickers t ON t.id = wrt.ticker_id
+WHERE UPPER(t.symbol) = UPPER(:'symbol')
 ORDER BY wrt.date DESC
 LIMIT 50;
 
 \echo ''
 
-\echo '10b) Evidence presence for :symbol (last 50 evidence rows)'
+\echo '10b) Evidence presence for symbol :'symbol''
 SELECT
   e.date,
   jsonb_typeof(e.evidence_json) AS evidence_json_type
 FROM wyckoff_snapshot_evidence e
-JOIN tickers t
-  ON t.id = e.ticker_id
-WHERE UPPER(t.symbol) = UPPER(:symbol)
+JOIN tickers t ON t.id = e.ticker_id
+WHERE UPPER(t.symbol) = UPPER(:'symbol')
 ORDER BY e.date DESC
 LIMIT 50;
+
+\else
+
+\echo 'Symbol not provided; skipping per-symbol drilldown sections.'
+
+\endif
 
 \echo ''
 \echo '============================================================'
