@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import json
 import logging
+import os
 import os
 import subprocess
 import sys
@@ -379,9 +381,65 @@ def _build_recommendation_row(
     metadata = response.get("snapshot_metadata") or {}
     ticker = metadata.get("ticker")
     if not isinstance(ticker, str) or ticker.upper() == "UNKNOWN":
+        if os.getenv("AI_DUMP") == "1":
+            log = logging.getLogger("kapman.ai.c4")
+            log.info(
+                "[AI_DUMP] "
+                + json.dumps(
+                    {
+                        "event": "recommendation_dropped",
+                        "reason": "unknown_ticker",
+                        "symbol": symbol,
+                        "primary_recommendation": response.get("primary_recommendation"),
+                    },
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            )
+            log.warning(
+                "[AI_DUMP] "
+                + json.dumps(
+                    {
+                        "event": "ai_zero_recommendations",
+                        "ticker": symbol,
+                        "model": ai_model,
+                        "reason": "unknown_ticker",
+                    },
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            )
         return None
     primary = response.get("primary_recommendation")
     if not isinstance(primary, dict):
+        if os.getenv("AI_DUMP") == "1":
+            log = logging.getLogger("kapman.ai.c4")
+            log.info(
+                "[AI_DUMP] "
+                + json.dumps(
+                    {
+                        "event": "recommendation_dropped",
+                        "reason": "missing_primary_recommendation",
+                        "symbol": symbol,
+                        "primary_recommendation": primary,
+                    },
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            )
+            log.warning(
+                "[AI_DUMP] "
+                + json.dumps(
+                    {
+                        "event": "ai_zero_recommendations",
+                        "ticker": symbol,
+                        "model": ai_model,
+                        "reason": "missing_primary_recommendation",
+                    },
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            )
         return None
 
     strategy_class = _normalize_strategy_class(primary.get("strategy_class"))

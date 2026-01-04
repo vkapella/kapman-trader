@@ -1,5 +1,11 @@
 import json
+import logging
+import os
 from typing import Any, Dict
+
+from .prompt_loader import load_prompt
+
+logger = logging.getLogger("kapman.ai.prompt_builder")
 
 
 def _canonical_json(value: Any) -> str:
@@ -23,6 +29,9 @@ def _request_payload(
     }
 
 
+PROMPT_TEMPLATE = load_prompt("c4_recommendation_prompt.txt")
+
+
 def build_prompt(
     *,
     snapshot_payload: dict,
@@ -38,59 +47,22 @@ def build_prompt(
         instructions=instructions,
         prompt_version=prompt_version,
     )
-    response_schema = {
-        "snapshot_metadata": {
-            "ticker": "",
-            "snapshot_time": "",
-            "model_version": "",
-            "wyckoff_regime": "",
-            "wyckoff_primary_event": "",
-            "data_completeness_flags": {},
-        },
-        "primary_recommendation": {
-            "action": "ENTER|WAIT|DEFER|NO_TRADE",
-            "strategy_class": "NONE|LONG_CALL|LONG_PUT|CALL_DEBIT_SPREAD|PUT_DEBIT_SPREAD|CSP|COVERED_CALL|HEDGE_OVERLAY",
-            "direction": "BULLISH|BEARISH|NEUTRAL",
-            "confidence_score": 0,
-            "time_horizon": "short|medium|long",
-            "rationale_summary": "",
-        },
-        "alternative_recommendations": [
-            {
-                "label": "",
-                "action": "ENTER|WAIT|DEFER|NO_TRADE",
-                "strategy_class": "NONE|LONG_CALL|LONG_PUT|CALL_DEBIT_SPREAD|PUT_DEBIT_SPREAD|CSP|COVERED_CALL|HEDGE_OVERLAY",
-                "direction": "BULLISH|BEARISH|NEUTRAL",
-                "confidence_score": 0,
-                "blocking_reason": "",
-                "promotion_conditions": "",
-            }
-        ],
-        "reasoning_trace": {
-            "fired_rules": [],
-            "cluster_contributions": [{"cluster": "", "impact": ""}],
-            "supporting_factors": [],
-            "blocking_factors": [],
-        },
-        "confidence_summary": {
-            "confidence_type": "RELATIVE",
-            "ranking_basis": "Primary outranks alternatives by construction",
-            "confidence_gap_notes": None,
-        },
-        "missing_data_declaration": [],
-        "guardrails_and_disclaimers": [],
-    }
     payload_json = _canonical_json(payload)
-    response_schema_json = _canonical_json(response_schema)
-    return "\n".join(
+    prompt_text = "\n".join(
         [
-            "KAPMAN_C1_PROMPT",
-            f"PROMPT_VERSION: {prompt_version}",
-            "Return a single JSON object that conforms to the KapMan agent response contract.",
-            "No prose. No markdown.",
-            "RESPONSE_SCHEMA:",
-            response_schema_json,
-            "REQUEST_PAYLOAD:",
+            PROMPT_TEMPLATE,
+            "You MUST return exactly one recommendation.",
+            "If no trade is appropriate, return action = HOLD with rationale.",
+            "CONTEXT:",
             payload_json,
         ]
     )
+    if os.getenv("AI_DUMP") == "1":
+        snapshot_payload = snapshot_payload if isinstance(snapshot_payload, dict) else {}
+        payload = {
+            "event": "ai_prompt_dump",
+            "ticker": snapshot_payload.get("symbol") or snapshot_payload.get("ticker"),
+            "prompt": prompt_text,
+        }
+        logger.info("[AI_DUMP] " + json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
+    return prompt_text
