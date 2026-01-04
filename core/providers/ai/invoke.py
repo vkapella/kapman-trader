@@ -472,7 +472,17 @@ def invoke_planning_agent(
         try:
             raw_response = asyncio.run(_invoke_provider(provider_key, model_id, prompt_text))
         except Exception as exc:
-            raw_response = {"_error": f"Provider invocation failed: {exc}"}
+            reason = f"Provider invocation failed: {type(exc).__name__}: {exc}"
+            status_code = getattr(exc, "status_code", None)
+            response_text = getattr(exc, "response_text", None)
+            request_id = getattr(exc, "request_id", None)
+            if status_code is not None:
+                reason = f"{reason} (status_code={status_code})"
+            if response_text:
+                reason = f"{reason} (response_text={response_text})"
+            if request_id:
+                reason = f"{reason} (request_id={request_id})"
+            raw_response = {"_error": reason}
 
     if debug:
         _log_event(invocation_id, "raw_response", {"raw_response": raw_response})
