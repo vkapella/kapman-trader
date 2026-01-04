@@ -10,6 +10,8 @@ import pandas as pd
 
 from .metrics import EvalMetrics
 
+logger = logging.getLogger(__name__)
+
 @dataclass
 class RunMetadata:
     start_date: str
@@ -151,6 +153,15 @@ def _summary_diff(prod_df: pd.DataFrame, bench_df: pd.DataFrame, dataset: str) -
     for metric, horizon in SUMMARY_METRICS:
         if metric not in prod.columns and metric not in bench.columns:
             continue
+        required_cols = set(merge_cols + [metric])
+        if not required_cols.issubset(set(prod.columns)) or not required_cols.issubset(set(bench.columns)):
+            logger.warning(
+                f"[COMPARE] Skipping metric '{metric}' for dataset '{dataset}' "
+                f"(missing columns: "
+                f"{sorted(required_cols - set(prod.columns))} prod, "
+                f"{sorted(required_cols - set(bench.columns))} bench)"
+            )
+            return None
         prod_slice = prod[merge_cols + [metric]].rename(columns={metric: "prod"})
         bench_slice = bench[merge_cols + [metric]].rename(columns={metric: "benchmark"})
         merged = bench_slice.merge(prod_slice, on=merge_cols, how="outer")
@@ -260,7 +271,9 @@ def compare_outputs(
     for dataset, filename in summary_files.items():
         prod_df = _read_csv(prod_dir / filename, metrics)
         bench_df = _read_csv(bench_dir / filename, metrics)
-        summary_rows.append(_summary_diff(prod_df, bench_df, dataset))
+        row = _summary_diff(prod_df, bench_df, dataset)
+        if row is not None:
+            summary_rows.append(row)
     summary_diff = pd.concat(summary_rows, ignore_index=True) if summary_rows else pd.DataFrame()
 
     mae_deltas = pd.DataFrame(

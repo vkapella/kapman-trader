@@ -193,7 +193,7 @@ def _resolve_event_order_column(conn) -> Optional[str]:
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = 'public'
-              AND table_name = 'wyckoff_canonical_events'
+              AND table_name = 'wyckoff_context_events'
               AND column_name = ANY(%s)
             """,
             (candidates,),
@@ -237,7 +237,7 @@ def _fetch_canonical_events(
         cur.execute(
             f"""
             SELECT event_date, event_type{select_order}
-            FROM wyckoff_canonical_events
+            FROM public.wyckoff_context_events
             WHERE ticker_id = %s AND {where_clause}
             ORDER BY {order_clause}
             """,
