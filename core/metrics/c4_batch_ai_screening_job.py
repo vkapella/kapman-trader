@@ -629,6 +629,7 @@ def run_batch_ai_screening(
     snapshot_time: Optional[datetime],
     ai_provider: str,
     ai_model: str,
+    symbols: Optional[Sequence[str]] = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     batch_wait_seconds: float = DEFAULT_BATCH_WAIT_SECONDS,
     max_retries: int = DEFAULT_MAX_RETRIES,
@@ -658,6 +659,13 @@ def run_batch_ai_screening(
         return []
 
     tickers = _fetch_watchlist_tickers(conn)
+    if symbols is not None:
+        requested = {
+            str(symbol).strip().upper()
+            for symbol in symbols
+            if symbol is not None and str(symbol).strip()
+        }
+        tickers = [row for row in tickers if row[1].upper() in requested] if requested else []
     if not tickers:
         _log_event(log, "run_empty", {"reason": "no_watchlist_tickers"})
         return []
