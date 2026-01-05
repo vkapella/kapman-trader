@@ -75,3 +75,5 @@ venv/
 
 # KapMan prod vs bench generated artifacts
 tools/prod_vs_bench/outputs/
+
+data/llms
