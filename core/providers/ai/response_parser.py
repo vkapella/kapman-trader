@@ -1,6 +1,9 @@
+import hashlib
 import json
 import logging
 import os
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -14,9 +17,16 @@ STANDARD_GUARDRAILS = [
 
 logger = logging.getLogger("kapman.ai.response_parser")
 
+_OPTION_CHAIN_REGISTRY: dict[str, set[tuple[str, Decimal, str]]] = {}
+_STRIKE_QUANT = Decimal("0.0001")
+
 
 def _ai_dump_enabled() -> bool:
     return os.getenv("AI_DUMP") == "1"
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 
 
 def extract_output_text(response: dict) -> List[str]:
@@ -28,66 +38,98 @@ def extract_output_text(response: dict) -> List[str]:
                     texts.append(part.get("text"))
     return texts
 
-REQUIRED_TOP_LEVEL = [
-    "snapshot_metadata",
-    "primary_recommendation",
-    "alternative_recommendations",
-    "reasoning_trace",
-    "confidence_summary",
-    "missing_data_declaration",
-    "guardrails_and_disclaimers",
-]
 
-REQUIRED_SNAPSHOT_METADATA = [
-    "ticker",
-    "snapshot_time",
-    "model_version",
-    "wyckoff_regime",
-    "wyckoff_primary_event",
-    "data_completeness_flags",
-]
+def _parse_strike(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value)).quantize(_STRIKE_QUANT)
+    except (InvalidOperation, ValueError):
+        return None
 
-REQUIRED_PRIMARY = [
-    "action",
-    "strategy_class",
-    "direction",
-    "confidence_score",
-    "time_horizon",
-    "rationale_summary",
-]
 
-REQUIRED_ALTERNATIVE = [
-    "label",
-    "action",
-    "strategy_class",
-    "direction",
-    "confidence_score",
-    "blocking_reason",
-    "promotion_conditions",
-]
+def _parse_expiration(value: Any) -> Optional[str]:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            if "T" in text:
+                return datetime.fromisoformat(text).date().isoformat()
+            return date.fromisoformat(text).isoformat()
+        except ValueError:
+            return None
+    return None
 
-REQUIRED_REASONING = [
-    "fired_rules",
-    "cluster_contributions",
-    "supporting_factors",
-    "blocking_factors",
-]
 
-REQUIRED_CLUSTER_CONTRIBUTION = [
-    "cluster",
-    "impact",
-]
+def _normalize_option_type(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    if text in {"C", "CALL"}:
+        return "CALL"
+    if text in {"P", "PUT"}:
+        return "PUT"
+    return None
 
-REQUIRED_CONFIDENCE = [
-    "confidence_type",
-    "ranking_basis",
-]
+
+def _iter_snapshot_contracts(snapshot: Any) -> List[Any]:
+    if isinstance(snapshot, list):
+        return snapshot
+    if isinstance(snapshot, dict):
+        for key in ("contracts", "options", "option_chain", "chain"):
+            value = snapshot.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _extract_contracts_from_snapshot(snapshot: Any) -> set[tuple[str, Decimal, str]]:
+    contracts: set[tuple[str, Decimal, str]] = set()
+    for item in _iter_snapshot_contracts(snapshot):
+        if not isinstance(item, dict):
+            continue
+        expiration = _parse_expiration(item.get("expiration") or item.get("expiration_date"))
+        strike = _parse_strike(item.get("strike") or item.get("strike_price"))
+        option_type = _normalize_option_type(item.get("type") or item.get("option_type"))
+        if expiration and strike and option_type:
+            contracts.add((expiration, strike, option_type))
+    return contracts
+
+
+def register_option_chain_snapshot(snapshot: Any) -> tuple[str, int]:
+    if snapshot is None:
+        raise ValueError("option_chain_snapshot_missing")
+    snapshot_json = _canonical_json(snapshot)
+    digest = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+    contracts = _extract_contracts_from_snapshot(snapshot)
+    if not contracts:
+        raise ValueError("option_chain_snapshot_empty")
+    _OPTION_CHAIN_REGISTRY[digest] = contracts
+    return digest, len(contracts)
 
 
 def _parse_raw_response(raw_response: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     if isinstance(raw_response, dict):
         if "_error" in raw_response:
             return None, str(raw_response.get("_error"))
+        if isinstance(raw_response.get("output"), list):
+            texts = extract_output_text(raw_response)
+            if not texts:
+                return None, "No output_text found in response"
+            try:
+                data = json.loads(texts[0])
+            except Exception as exc:
+                return None, f"Invalid JSON: {exc}"
+            if not isinstance(data, dict):
+                return None, "Response JSON is not an object"
+            return data, None
         return raw_response, None
     if isinstance(raw_response, (bytes, bytearray)):
         raw_response = raw_response.decode("utf-8", errors="replace")
@@ -105,186 +147,88 @@ def _parse_raw_response(raw_response: Any) -> Tuple[Optional[Dict[str, Any]], Op
     return None, "Unsupported raw response type"
 
 
-def _missing_key(container: Dict[str, Any], key: str) -> bool:
-    return key not in container
-
-
 def _validate_candidate(candidate: Dict[str, Any]) -> Tuple[bool, str]:
-    for key in REQUIRED_TOP_LEVEL:
-        if _missing_key(candidate, key):
-            return False, f"Missing top-level key: {key}"
-    if not isinstance(candidate["snapshot_metadata"], dict):
-        return False, "snapshot_metadata must be an object"
-    for key in REQUIRED_SNAPSHOT_METADATA:
-        if _missing_key(candidate["snapshot_metadata"], key):
-            return False, f"Missing snapshot_metadata field: {key}"
-    if not isinstance(candidate["primary_recommendation"], dict):
-        return False, "primary_recommendation must be an object"
-    for key in REQUIRED_PRIMARY:
-        if _missing_key(candidate["primary_recommendation"], key):
-            return False, f"Missing primary_recommendation field: {key}"
-    if not isinstance(candidate["alternative_recommendations"], list):
-        return False, "alternative_recommendations must be a list"
-    for alt in candidate["alternative_recommendations"]:
-        if not isinstance(alt, dict):
-            return False, "alternative_recommendations must contain objects"
-        for key in REQUIRED_ALTERNATIVE:
-            if _missing_key(alt, key):
-                return False, f"Missing alternative_recommendations field: {key}"
-    if not isinstance(candidate["reasoning_trace"], dict):
-        return False, "reasoning_trace must be an object"
-    for key in REQUIRED_REASONING:
-        if _missing_key(candidate["reasoning_trace"], key):
-            return False, f"Missing reasoning_trace field: {key}"
-    if not isinstance(candidate["reasoning_trace"]["cluster_contributions"], list):
-        return False, "cluster_contributions must be a list"
-    for entry in candidate["reasoning_trace"]["cluster_contributions"]:
-        if not isinstance(entry, dict):
-            return False, "cluster_contributions must contain objects"
-        for key in REQUIRED_CLUSTER_CONTRIBUTION:
-            if _missing_key(entry, key):
-                return False, f"Missing cluster_contributions field: {key}"
-    if not isinstance(candidate["confidence_summary"], dict):
-        return False, "confidence_summary must be an object"
-    for key in REQUIRED_CONFIDENCE:
-        if _missing_key(candidate["confidence_summary"], key):
-            return False, f"Missing confidence_summary field: {key}"
-    if not isinstance(candidate["missing_data_declaration"], list):
-        return False, "missing_data_declaration must be a list"
-    if not isinstance(candidate["guardrails_and_disclaimers"], list):
-        return False, "guardrails_and_disclaimers must be a list"
-    if not candidate["guardrails_and_disclaimers"]:
-        return False, "guardrails_and_disclaimers must be non-empty"
-    primary_confidence = candidate["primary_recommendation"].get("confidence_score")
-    if not isinstance(primary_confidence, (int, float)):
-        return False, "primary confidence_score must be numeric"
-    for alt in candidate["alternative_recommendations"]:
-        alt_confidence = alt.get("confidence_score")
-        if not isinstance(alt_confidence, (int, float)):
-            return False, "alternative confidence_score must be numeric"
-        if alt_confidence >= primary_confidence:
-            return False, "alternative confidence must be lower than primary"
+    errors: List[str] = []
+    for key in ("snapshot_metadata", "context_evaluation", "option_recommendations", "confidence_summary"):
+        if key not in candidate:
+            errors.append(f"Missing top-level key: {key}")
+    snapshot_metadata = candidate.get("snapshot_metadata")
+    if snapshot_metadata is not None and not isinstance(snapshot_metadata, dict):
+        errors.append("snapshot_metadata must be an object")
+
+    context_eval = candidate.get("context_evaluation")
+    status = None
+    failure_type = None
+    if not isinstance(context_eval, dict):
+        errors.append("context_evaluation must be an object")
+    else:
+        status = context_eval.get("status")
+        failure_type = context_eval.get("failure_type")
+        reason = context_eval.get("reason")
+        if status not in {"ACCEPTED", "REJECTED"}:
+            errors.append("context_evaluation.status invalid")
+        if failure_type not in {"SCHEMA_FAIL", "INVALID_CHAIN", "CONTEXT_REJECTED", None}:
+            errors.append("context_evaluation.failure_type invalid")
+        if not isinstance(reason, str):
+            errors.append("context_evaluation.reason must be a string")
+        if status == "REJECTED" and failure_type is None:
+            errors.append("context_evaluation.failure_type required for rejection")
+        if status == "ACCEPTED" and failure_type is not None:
+            errors.append("context_evaluation.failure_type must be null for acceptance")
+
+    option_recs = candidate.get("option_recommendations")
+    primary = None
+    if not isinstance(option_recs, dict):
+        errors.append("option_recommendations must be an object")
+    else:
+        primary = option_recs.get("primary")
+        alternatives = option_recs.get("alternatives")
+        if not isinstance(alternatives, list):
+            errors.append("option_recommendations.alternatives must be a list")
+        if status == "REJECTED" and primary is not None:
+            errors.append("option_recommendations.primary must be null for rejection")
+        if status == "ACCEPTED":
+            if not isinstance(primary, dict):
+                errors.append("option_recommendations.primary must be an object for acceptance")
+            else:
+                option_type_raw = primary.get("option_type")
+                if option_type_raw not in {"CALL", "PUT"}:
+                    errors.append("option_recommendations.primary.option_type invalid")
+                strike_value = primary.get("strike")
+                if not isinstance(strike_value, (int, float, Decimal)) or isinstance(strike_value, bool):
+                    errors.append("option_recommendations.primary.strike must be numeric")
+                expiration_raw = primary.get("expiration")
+                expiration = _parse_expiration(expiration_raw)
+                if expiration is None or not isinstance(expiration_raw, str) or expiration_raw.strip() != expiration:
+                    errors.append("option_recommendations.primary.expiration invalid")
+                stop_loss = primary.get("stop_loss")
+                if not isinstance(stop_loss, str) or not stop_loss:
+                    errors.append("option_recommendations.primary.stop_loss required")
+                profit_target = primary.get("profit_target")
+                if not isinstance(profit_target, str) or not profit_target:
+                    errors.append("option_recommendations.primary.profit_target required")
+
+    confidence_summary = candidate.get("confidence_summary")
+    if confidence_summary is not None and not isinstance(confidence_summary, dict):
+        errors.append("confidence_summary must be an object")
+
+    if errors:
+        logger.error("schema_validation_failed", extra={"errors": errors})
+        return False, "; ".join(errors)
     return True, "PASS"
 
 
-def _coerce_confidence_score(value: Any) -> Optional[int]:
-    if value is None:
-        return None
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return None
-    if 0.0 <= score <= 1.0:
-        return int(round(score * 100))
-    if 0.0 <= score <= 100.0:
-        return int(round(score))
-    return None
-
-
-def normalize_recommendation(raw_output: Any) -> Dict[str, Any]:
-    if raw_output is None:
-        raise RuntimeError("Model returned no content")
-    if isinstance(raw_output, (bytes, bytearray)):
-        raw_output = raw_output.decode("utf-8", errors="replace")
-    if isinstance(raw_output, str):
-        text = raw_output.strip()
-        if not text:
-            raise RuntimeError("Model returned no content")
-        return {
-            "action": "HOLD",
-            "confidence": 0.5,
-            "risk_level": "MEDIUM",
-            "rationale": text,
-        }
-    if not isinstance(raw_output, dict):
-        raise RuntimeError("Model returned no content")
-
-    if "primary_recommendation" in raw_output and isinstance(raw_output["primary_recommendation"], dict):
-        primary = raw_output["primary_recommendation"]
-        raw_action = primary.get("action")
-        raw_confidence = primary.get("confidence_score") or primary.get("confidence")
-        raw_rationale = primary.get("rationale_summary") or primary.get("rationale")
-    else:
-        raw_action = raw_output.get("action")
-        raw_confidence = raw_output.get("confidence")
-        raw_rationale = raw_output.get("rationale") or raw_output.get("rationale_summary")
-
-    action = str(raw_action or "HOLD").strip().upper()
-    reason = None
-    if action not in {"BUY", "SELL", "HOLD", "NO_TRADE"}:
-        reason = "invalid_action"
-        action = "HOLD"
-    if action == "NO_TRADE":
-        reason = "no_trade_action"
-        action = "HOLD"
-
-    confidence = 0.5
-    if raw_confidence is not None:
-        try:
-            value = float(raw_confidence)
-        except (TypeError, ValueError):
-            value = None
-        if value is not None:
-            if 0.0 <= value <= 1.0:
-                confidence = value
-            elif 0.0 <= value <= 100.0:
-                confidence = value / 100.0
-            else:
-                if reason is None:
-                    reason = "invalid_confidence"
-
-    rationale = ""
-    if raw_rationale is None:
-        rationale = ""
-    elif isinstance(raw_rationale, str):
-        rationale = raw_rationale
-    else:
-        rationale = str(raw_rationale)
-
-    risk_level = str(raw_output.get("risk_level") or "MEDIUM").strip().upper()
-    if risk_level not in {"LOW", "MEDIUM", "HIGH"}:
-        risk_level = "MEDIUM"
-
-    normalized = {
-        "action": action,
-        "confidence": confidence,
-        "risk_level": risk_level,
-        "rationale": rationale,
-    }
-    if _ai_dump_enabled() and action == "HOLD":
-        logger.info("[AI_DUMP] " + json.dumps({"event": "hold_reason", "reason": reason or "default_hold"}, ensure_ascii=True, separators=(",", ":")))
-    return normalized
-
-
-def _build_simple_recommendation(
+def _build_failure_response(
     *,
-    recommendation: Dict[str, Any],
-    candidate: Optional[Dict[str, Any]],
+    reason: str,
+    failure_type: str,
     provider_id: str,
     model_id: str,
     prompt_version: str,
     kapman_model_version: str,
 ) -> Dict[str, Any]:
-    confidence_score = int(round(recommendation["confidence"] * 100))
-    normalized_action = recommendation["action"]
-    if normalized_action == "BUY":
-        primary_action = "ENTER"
-        direction = "BULLISH"
-    elif normalized_action == "SELL":
-        primary_action = "ENTER"
-        direction = "BEARISH"
-    else:
-        primary_action = "NO_TRADE"
-        direction = "NEUTRAL"
-    rationale_text = recommendation["rationale"]
-    ticker = "UNKNOWN"
-    if candidate:
-        ticker = candidate.get("symbol") or candidate.get("ticker") or "UNKNOWN"
-        snapshot_metadata = candidate.get("snapshot_metadata")
-        if isinstance(snapshot_metadata, dict):
-            ticker = snapshot_metadata.get("ticker") or ticker
     snapshot_metadata = {
-        "ticker": str(ticker),
+        "ticker": "UNKNOWN",
         "snapshot_time": "UNKNOWN",
         "model_version": prompt_version,
         "wyckoff_regime": "UNKNOWN",
@@ -297,51 +241,18 @@ def _build_simple_recommendation(
     }
     return {
         "snapshot_metadata": snapshot_metadata,
-        "primary_recommendation": {
-            "action": primary_action,
-            "strategy_class": "NONE",
-            "direction": direction,
-            "confidence_score": confidence_score,
-            "time_horizon": "medium",
-            "rationale_summary": rationale_text,
+        "context_evaluation": {
+            "status": "REJECTED",
+            "failure_type": failure_type,
+            "reason": reason,
         },
-        "alternative_recommendations": [],
-        "reasoning_trace": {
-            "fired_rules": [],
-            "cluster_contributions": [{"cluster": "Meta", "impact": "MODEL_OUTPUT"}],
-            "supporting_factors": [],
-            "blocking_factors": [],
-        },
+        "option_recommendations": {"primary": None, "alternatives": []},
         "confidence_summary": {
+            "score": 0.0,
+            "summary": "failure",
             "confidence_type": "RELATIVE",
             "ranking_basis": "Primary outranks alternatives by construction",
             "confidence_gap_notes": None,
-        },
-        "missing_data_declaration": [],
-        "guardrails_and_disclaimers": list(STANDARD_GUARDRAILS),
-    }
-
-
-def _failure_response(
-    *,
-    reason: str,
-    provider_id: str,
-    model_id: str,
-    prompt_version: str,
-    kapman_model_version: str,
-) -> Dict[str, Any]:
-    return {
-        "snapshot_metadata": {
-            "ticker": "UNKNOWN",
-            "snapshot_time": "UNKNOWN",
-            "model_version": prompt_version,
-            "wyckoff_regime": "UNKNOWN",
-            "wyckoff_primary_event": "NONE",
-            "data_completeness_flags": {},
-            "ai_provider": provider_id,
-            "ai_model": model_id,
-            "ai_model_version": None,
-            "kapman_model_version": kapman_model_version,
         },
         "primary_recommendation": {
             "action": "NO_TRADE",
@@ -368,14 +279,28 @@ def _failure_response(
             "supporting_factors": [],
             "blocking_factors": [reason],
         },
-        "confidence_summary": {
-            "confidence_type": "RELATIVE",
-            "ranking_basis": "Primary outranks alternatives by construction",
-            "confidence_gap_notes": None,
-        },
         "missing_data_declaration": [f"Normalization failure: {reason}"],
         "guardrails_and_disclaimers": list(STANDARD_GUARDRAILS),
     }
+
+
+def _failure_response(
+    *,
+    reason: str,
+    provider_id: str,
+    model_id: str,
+    prompt_version: str,
+    kapman_model_version: str,
+    failure_type: str = "SCHEMA_FAIL",
+) -> Dict[str, Any]:
+    return _build_failure_response(
+        reason=reason,
+        failure_type=failure_type,
+        provider_id=provider_id,
+        model_id=model_id,
+        prompt_version=prompt_version,
+        kapman_model_version=kapman_model_version,
+    )
 
 
 def normalize_agent_response(
@@ -394,122 +319,24 @@ def normalize_agent_response(
         )
     candidate, error_reason = _parse_raw_response(raw_response)
     if error_reason:
-        if isinstance(raw_response, dict) and "_error" in raw_response:
-            normalized = _failure_response(
-                reason=error_reason,
-                provider_id=provider_id,
-                model_id=model_id,
-                prompt_version=prompt_version,
-                kapman_model_version=kapman_model_version,
-            )
-            if _ai_dump_enabled():
-                logger.info(
-                    "[AI_DUMP] "
-                    + json.dumps(
-                        {"event": "ai_parse_dump", "ticker": "UNKNOWN", "normalized": "NO_TRADE", "reason": error_reason},
-                        ensure_ascii=True,
-                        separators=(",", ":"),
-                    )
-                )
-            return normalized
-        recommendation = normalize_recommendation(raw_response)
-        normalized = _build_simple_recommendation(
-            recommendation=recommendation,
-            candidate=None,
+        logger.error("ai_parse_failure", extra={"reason": error_reason})
+        return _failure_response(
+            reason=error_reason,
             provider_id=provider_id,
             model_id=model_id,
             prompt_version=prompt_version,
             kapman_model_version=kapman_model_version,
+            failure_type="SCHEMA_FAIL",
         )
-        logger.debug("ai_parsed_recommendation", extra={"recommendation": normalized})
-        if _ai_dump_enabled():
-            logger.info(
-                "[AI_DUMP] "
-                + json.dumps(
-                    {
-                        "event": "ai_parse_dump",
-                        "ticker": normalized.get("snapshot_metadata", {}).get("ticker"),
-                        "normalized": normalized,
-                    },
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                )
-            )
-        return normalized
     assert candidate is not None
-    if isinstance(candidate, dict) and isinstance(candidate.get("output"), list):
-        texts = extract_output_text(candidate)
-        if not texts:
-            raise ValueError("No output_text found in OpenAI response")
-        raw = texts[0]
-        try:
-            rec = json.loads(raw)
-        except Exception as exc:
-            raise ValueError(f"Invalid JSON from model: {raw}") from exc
-        if not isinstance(rec, dict):
-            raise ValueError("Model output is not a JSON object")
-        required = {"action", "confidence", "rationale"}
-        missing = required - rec.keys()
-        if missing:
-            raise ValueError(f"Missing required fields: {missing}")
-        recommendations = [rec]
-        if not recommendations:
-            raise RuntimeError(f"Parser produced zero recommendations from valid model output: {raw}")
-        recommendation = normalize_recommendation(rec)
-        normalized = _build_simple_recommendation(
-            recommendation=recommendation,
-            candidate=None,
-            provider_id=provider_id,
-            model_id=model_id,
-            prompt_version=prompt_version,
-            kapman_model_version=kapman_model_version,
-        )
-        return normalized
     valid, reason = _validate_candidate(candidate)
     if not valid:
-        recommendation = normalize_recommendation(candidate)
-        normalized = _build_simple_recommendation(
-            recommendation=recommendation,
-            candidate=candidate,
+        return _failure_response(
+            reason=reason,
             provider_id=provider_id,
             model_id=model_id,
             prompt_version=prompt_version,
             kapman_model_version=kapman_model_version,
-        )
-        logger.debug("ai_parsed_recommendation", extra={"recommendation": normalized})
-        if _ai_dump_enabled():
-            logger.info(
-                "[AI_DUMP] "
-                + json.dumps(
-                    {
-                        "event": "ai_parse_dump",
-                        "ticker": normalized.get("snapshot_metadata", {}).get("ticker"),
-                        "normalized": normalized,
-                    },
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                )
-            )
-        return normalized
-    snapshot_metadata = candidate["snapshot_metadata"]
-    snapshot_metadata["model_version"] = prompt_version
-    snapshot_metadata["ai_provider"] = provider_id
-    snapshot_metadata["ai_model"] = model_id
-    snapshot_metadata.setdefault("ai_model_version", None)
-    snapshot_metadata["kapman_model_version"] = kapman_model_version
-    candidate["guardrails_and_disclaimers"] = list(STANDARD_GUARDRAILS)
-    logger.debug("ai_parsed_recommendation", extra={"recommendation": candidate})
-    if _ai_dump_enabled():
-        logger.info(
-            "[AI_DUMP] "
-            + json.dumps(
-                {
-                    "event": "ai_parse_dump",
-                    "ticker": candidate.get("snapshot_metadata", {}).get("ticker"),
-                    "normalized": candidate,
-                },
-                ensure_ascii=True,
-                separators=(",", ":"),
-            )
+            failure_type="SCHEMA_FAIL",
         )
     return candidate

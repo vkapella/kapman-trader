@@ -40,7 +40,19 @@ async def test_openai_responses_payload_and_text(monkeypatch) -> None:
     assert calls[0][2]["model"] == "gpt-5-nano"
     assert calls[0][2]["input"] == "USER"
     assert calls[0][2]["instructions"] == "SYS"
-    assert set(calls[0][2].keys()) == {"model", "input", "instructions"}
+    assert calls[0][2]["temperature"] == 0
+    assert calls[0][2]["top_p"] == 1
+    assert calls[0][2]["text"]["format"]["type"] == "json_schema"
+    assert "schema" in calls[0][2]["text"]["format"]
+    assert "response_format" not in calls[0][2]
+    assert set(calls[0][2].keys()) == {
+        "model",
+        "input",
+        "instructions",
+        "text",
+        "temperature",
+        "top_p",
+    }
 
 
 @pytest.mark.asyncio

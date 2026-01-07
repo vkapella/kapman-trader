@@ -1,13 +1,28 @@
 import json
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import httpx
 import logging
 
 from .base import AIProvider, ProviderResponse
+from .prompt_loader import load_schema
 
 logger = logging.getLogger("kapman.ai.openai")
+SCHEMA_NAME = "ai/wyckoff_context_evaluation.v1.schema.json"
+SYSTEM_MARKER = "<<<SYSTEM_PROMPT>>>"
+USER_MARKER = "<<<USER_PROMPT>>>"
+
+
+def _split_combined_prompt(system_prompt: str, user_prompt: str) -> Tuple[str, str]:
+    if system_prompt and system_prompt.strip():
+        return system_prompt, user_prompt
+    if user_prompt and SYSTEM_MARKER in user_prompt and USER_MARKER in user_prompt:
+        _, remainder = user_prompt.split(SYSTEM_MARKER, 1)
+        if USER_MARKER in remainder:
+            system_text, user_text = remainder.split(USER_MARKER, 1)
+            return system_text.strip(), user_text.strip()
+    return system_prompt, user_prompt
 
 
 def _ai_dump_enabled() -> bool:
@@ -49,11 +64,6 @@ class OpenAIProvider(AIProvider):
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
 
-    def _is_gpt5_model(self, model_id: str) -> bool:
-        if not model_id:
-            return False
-        return model_id.strip().lower().startswith("gpt-5")
-
     def _extract_responses_text(self, resp_json: dict) -> str:
         output_text = resp_json.get("output_text")
         if isinstance(output_text, str) and output_text:
@@ -84,30 +94,27 @@ class OpenAIProvider(AIProvider):
         return "\n".join(texts)
 
     async def invoke(self, model_id: str, system_prompt: str, user_prompt: str) -> ProviderResponse:
+        system_prompt, user_prompt = _split_combined_prompt(system_prompt, user_prompt)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        use_responses = self._is_gpt5_model(model_id)
-        if use_responses:
-            payload = {
-                "model": model_id,
-                "input": user_prompt,
-            }
-            if system_prompt and system_prompt.strip():
-                payload["instructions"] = system_prompt
-            endpoint = "responses"
-        else:
-            payload = {
-                "model": model_id,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0,
-                "top_p": 1,
-            }
-            endpoint = "chat/completions"
+        schema = load_schema(SCHEMA_NAME)
+        payload = {
+            "model": model_id,
+            "input": user_prompt,
+            "instructions": system_prompt,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "kapman_a1_contract_v1",
+                    "schema": schema,
+                }
+            },
+            "temperature": 0,
+            "top_p": 1,
+        }
+        endpoint = "responses"
         if _ai_dump_enabled():
             print(
                 "[AI_DUMP] "
@@ -164,7 +171,7 @@ class OpenAIProvider(AIProvider):
                 response.raise_for_status()
                 data = response.json()
                 if _ai_dump_enabled():
-                    parsed_output = data.get("output") if use_responses else data.get("choices")
+                    parsed_output = data.get("output")
                     print(
                         "[AI_DUMP] "
                         + json.dumps(
@@ -203,16 +210,10 @@ class OpenAIProvider(AIProvider):
             raise RuntimeError(detail) from exc
         except Exception as exc:
             raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
-        if use_responses:
-            try:
-                content = self._extract_responses_text(data)
-            except Exception as exc:
-                logger.debug("openai_raw_response", extra={"output": data.get("output")})
-                raise RuntimeError(f"OpenAI response parsing failed: {exc}") from exc
-        else:
-            content = ""
-            if data.get("choices"):
-                message = data["choices"][0].get("message", {})
-                content = message.get("content", "") or ""
+        try:
+            content = self._extract_responses_text(data)
+        except Exception as exc:
+            logger.debug("openai_raw_response", extra={"output": data.get("output")})
+            raise RuntimeError(f"OpenAI response parsing failed: {exc}") from exc
         model_version = data.get("model") or model_id
         return ProviderResponse(content=content, model_version=model_version)

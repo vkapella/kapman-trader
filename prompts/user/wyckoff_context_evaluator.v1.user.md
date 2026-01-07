@@ -3,9 +3,9 @@ CONTEXT CLAIM
 Wyckoff regime: {{WYCKOFF_REGIME}}
 Provided confidence: {{WYCKOFF_CONFIDENCE}}
 
-DATA
-----
-{{FULL_SNAPSHOT_PAYLOAD_JSON}}
+INJECTED INPUT (CANONICAL JSON)
+------------------------------
+{{INJECTED_CONTEXT_JSON}}
 
 TASK
 ----
@@ -18,6 +18,11 @@ Then:
 - Conditionally propose:
   • One primary option strategy
   • Two alternative strategies
+
+Requirements:
+- Recommendations must use only contracts from option_chain_snapshot.
+- Each strategy must include entry_reference, stop_loss, profit_target, confidence_score, and time_horizon.
+- Include meta.option_chain_hash exactly as provided in the injected input.
 
 If evidence is weak or contradictory:
 - Recommendations must reflect uncertainty or defensive positioning.

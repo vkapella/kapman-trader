@@ -22,38 +22,22 @@ def _base_response() -> dict:
             "ai_model_version": None,
             "kapman_model_version": "test",
         },
-        "primary_recommendation": {
-            "action": "ENTER",
-            "strategy_class": "LONG_CALL",
-            "direction": "BULLISH",
-            "confidence_score": 80,
-            "time_horizon": "short",
-            "rationale_summary": "Test rationale.",
+        "context_evaluation": {
+            "status": "ACCEPTED",
+            "failure_type": None,
+            "reason": "Context supported.",
         },
-        "alternative_recommendations": [
-            {
-                "label": "Alt 1",
-                "action": "WAIT",
-                "strategy_class": "NONE",
-                "direction": "NEUTRAL",
-                "confidence_score": 60,
-                "blocking_reason": "Blocked.",
-                "promotion_conditions": "Clear veto.",
-            }
-        ],
-        "reasoning_trace": {
-            "fired_rules": [],
-            "cluster_contributions": [{"cluster": "Meta", "impact": "TEST"}],
-            "supporting_factors": [],
-            "blocking_factors": [],
+        "option_recommendations": {
+            "primary": {
+                "option_type": "CALL",
+                "strike": 150,
+                "expiration": "2026-01-17",
+                "stop_loss": "-50% premium",
+                "profit_target": "+100% premium",
+            },
+            "alternatives": [],
         },
-        "confidence_summary": {
-            "confidence_type": "RELATIVE",
-            "ranking_basis": "Primary outranks alternatives by construction",
-            "confidence_gap_notes": None,
-        },
-        "missing_data_declaration": [],
-        "guardrails_and_disclaimers": ["Guardrail"],
+        "confidence_summary": {"score": 0.7},
     }
 
 
@@ -78,103 +62,85 @@ def _validate_with_context(monkeypatch: pytest.MonkeyPatch, response: dict, *, c
 
 def test_valid_contract_passes(monkeypatch: pytest.MonkeyPatch) -> None:
     response = _base_response()
-    response["primary_recommendation"].update(
-        {"option_strike": 150, "option_expiration": "2026-01-17", "option_type": "C"}
-    )
     contracts = {(date(2026, 1, 17), Decimal("150.0000"), "C")}
 
     validated = _validate_with_context(monkeypatch, response, contracts=contracts)
 
-    assert validated["primary_recommendation"]["option_strike"] == 150
-    assert len(validated["alternative_recommendations"]) == 1
+    assert validated["context_evaluation"]["status"] == "ACCEPTED"
+    assert validated["context_evaluation"]["failure_type"] is None
+    assert validated["option_recommendations"]["primary"]["strike"] == 150
 
 
 def test_invalid_expiration_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     response = _base_response()
-    response["primary_recommendation"].update(
-        {"option_strike": 150, "option_expiration": "2026-02-17", "option_type": "C"}
-    )
+    response["option_recommendations"]["primary"]["expiration"] = "2026-02-17"
     contracts = {(date(2026, 1, 17), Decimal("150.0000"), "C")}
 
     validated = _validate_with_context(monkeypatch, response, contracts=contracts)
 
-    assert validated["snapshot_metadata"]["ticker"] == "UNKNOWN"
-    assert "Invalid option contract" in validated["primary_recommendation"]["rationale_summary"]
+    assert validated["context_evaluation"]["status"] == "REJECTED"
+    assert validated["context_evaluation"]["failure_type"] == "INVALID_CHAIN"
+    assert validated["option_recommendations"]["primary"] is None
 
 
 def test_invalid_strike_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     response = _base_response()
-    response["primary_recommendation"].update(
-        {"option_strike": 155, "option_expiration": "2026-01-17", "option_type": "C"}
-    )
+    response["option_recommendations"]["primary"]["strike"] = 155
     contracts = {(date(2026, 1, 17), Decimal("150.0000"), "C")}
 
     validated = _validate_with_context(monkeypatch, response, contracts=contracts)
 
-    assert validated["snapshot_metadata"]["ticker"] == "UNKNOWN"
-    assert "Invalid option contract" in validated["primary_recommendation"]["rationale_summary"]
+    assert validated["context_evaluation"]["status"] == "REJECTED"
+    assert validated["context_evaluation"]["failure_type"] == "INVALID_CHAIN"
+    assert validated["option_recommendations"]["primary"] is None
 
 
 def test_invalid_option_type_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     response = _base_response()
-    response["primary_recommendation"].update(
-        {"option_strike": 150, "option_expiration": "2026-01-17", "option_type": "P"}
-    )
+    response["option_recommendations"]["primary"]["option_type"] = "PUT"
     contracts = {(date(2026, 1, 17), Decimal("150.0000"), "C")}
 
     validated = _validate_with_context(monkeypatch, response, contracts=contracts)
 
-    assert validated["snapshot_metadata"]["ticker"] == "UNKNOWN"
-    assert "Invalid option contract" in validated["primary_recommendation"]["rationale_summary"]
+    assert validated["context_evaluation"]["status"] == "REJECTED"
+    assert validated["context_evaluation"]["failure_type"] == "INVALID_CHAIN"
+    assert validated["option_recommendations"]["primary"] is None
 
 
 def test_normalization_failure_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     response = _base_response()
-    response["primary_recommendation"].update(
-        {"option_strike": "bad", "option_expiration": "2026-01-17", "option_type": "C"}
-    )
+    response["option_recommendations"]["primary"]["strike"] = "bad"
     contracts = {(date(2026, 1, 17), Decimal("150.0000"), "C")}
 
     validated = _validate_with_context(monkeypatch, response, contracts=contracts)
 
-    assert validated["snapshot_metadata"]["ticker"] == "UNKNOWN"
-    assert "Invalid option contract" in validated["primary_recommendation"]["rationale_summary"]
+    assert validated["context_evaluation"]["status"] == "REJECTED"
+    assert validated["context_evaluation"]["failure_type"] == "SCHEMA_FAIL"
+    assert validated["option_recommendations"]["primary"] is None
 
 
 def test_mixed_valid_invalid_recommendations(monkeypatch: pytest.MonkeyPatch) -> None:
     response = _base_response()
-    response["primary_recommendation"].update(
-        {"option_strike": 150, "option_expiration": "2026-01-17", "option_type": "C"}
-    )
-    response["alternative_recommendations"] = [
+    response["option_recommendations"]["alternatives"] = [
         {
-            "label": "Valid alt",
-            "action": "WAIT",
-            "strategy_class": "NONE",
-            "direction": "NEUTRAL",
-            "confidence_score": 60,
-            "blocking_reason": "Blocked.",
-            "promotion_conditions": "Clear veto.",
-            "option_strike": 150,
-            "option_expiration": "2026-01-17",
-            "option_type": "C",
+            "option_type": "CALL",
+            "strike": 150,
+            "expiration": "2026-01-17",
+            "stop_loss": "-50% premium",
+            "profit_target": "+80% premium",
         },
         {
-            "label": "Invalid alt",
-            "action": "WAIT",
-            "strategy_class": "NONE",
-            "direction": "NEUTRAL",
-            "confidence_score": 55,
-            "blocking_reason": "Blocked.",
-            "promotion_conditions": "Clear veto.",
-            "option_strike": 155,
-            "option_expiration": "2026-01-17",
-            "option_type": "C",
+            "option_type": "CALL",
+            "strike": 155,
+            "expiration": "2026-01-17",
+            "stop_loss": "-50% premium",
+            "profit_target": "+80% premium",
         },
     ]
     contracts = {(date(2026, 1, 17), Decimal("150.0000"), "C")}
 
     validated = _validate_with_context(monkeypatch, response, contracts=contracts)
 
-    assert len(validated["alternative_recommendations"]) == 1
-    assert validated["alternative_recommendations"][0]["label"] == "Valid alt"
+    assert validated["context_evaluation"]["status"] == "REJECTED"
+    assert validated["context_evaluation"]["failure_type"] == "INVALID_CHAIN"
+    assert validated["option_recommendations"]["primary"] is None
