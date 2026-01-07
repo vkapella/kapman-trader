@@ -5,26 +5,21 @@ from core.providers.ai.response_parser import normalize_agent_response
 
 def _build_valid_response() -> dict:
     return {
-        "snapshot_metadata": {
-            "ticker": "AAPL",
-            "snapshot_time": "2026-01-10T00:00:00+00:00",
+        "context_label": "MARKUP",
+        "confidence_score": 0.6,
+        "metric_assessment": {
+            "supporting": ["wyckoff_regime", "bc_score"],
+            "contradicting": [],
+            "neutral": ["volatility_metrics_json"],
         },
-        "context_evaluation": {
-            "status": "ACCEPTED",
-            "failure_type": None,
-            "reason": "Context supported.",
+        "metric_weights": {"wyckoff_regime": 0.4, "bc_score": 0.2, "volatility_metrics_json": 0.1},
+        "discarded_metrics": ["duplicate_metric"],
+        "conditional_recommendation": {
+            "direction": "LONG",
+            "action": "PROCEED",
+            "option_type": None,
+            "option_strategy": None,
         },
-        "option_recommendations": {
-            "primary": {
-                "option_type": "CALL",
-                "strike": 150,
-                "expiration": "2026-01-17",
-                "stop_loss": "-50% premium",
-                "profit_target": "+100% premium",
-            },
-            "alternatives": [],
-        },
-        "confidence_summary": {"score": 0.6},
     }
 
 
@@ -39,5 +34,5 @@ def test_context_evaluation_parsing_accepts_valid_contracts() -> None:
         kapman_model_version="test",
     )
 
-    assert response["context_evaluation"]["status"] == "ACCEPTED"
-    assert response["option_recommendations"]["primary"]["option_type"] == "CALL"
+    assert response["context_label"] == "MARKUP"
+    assert response["conditional_recommendation"]["direction"] == "LONG"

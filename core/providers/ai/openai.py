@@ -107,7 +107,7 @@ class OpenAIProvider(AIProvider):
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "kapman_a1_contract_v1",
+                    "name": "wyckoff_context_evaluation_v1",
                     "schema": schema,
                 }
             },

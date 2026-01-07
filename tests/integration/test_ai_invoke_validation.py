@@ -25,52 +25,56 @@ def _extract_injected_payload(prompt_text: str) -> dict:
 
 def _valid_response() -> dict:
     return {
-        "snapshot_metadata": {
-            "ticker": "AAPL",
-            "snapshot_time": "2026-01-10T00:00:00+00:00",
+        "context_label": "MARKUP",
+        "confidence_score": 0.65,
+        "metric_assessment": {
+            "supporting": ["wyckoff_regime"],
+            "contradicting": [],
+            "neutral": ["volatility_metrics_json"],
         },
-        "context_evaluation": {
-            "status": "ACCEPTED",
-            "failure_type": None,
-            "reason": "Context supported.",
+        "metric_weights": {"wyckoff_regime": 0.5, "volatility_metrics_json": 0.2},
+        "discarded_metrics": [],
+        "conditional_recommendation": {
+            "direction": "LONG",
+            "action": "PROCEED",
+            "option_type": None,
+            "option_strategy": None,
         },
-        "option_recommendations": {
-            "primary": {
-                "option_type": "CALL",
-                "strike": 150,
-                "expiration": "2026-01-17",
-                "stop_loss": "-50% premium",
-                "profit_target": "+100% premium",
-            },
-            "alternatives": [],
-        },
-        "confidence_summary": {"score": 0.65},
     }
 
 
 @pytest.mark.integration
-def test_end_to_end_build_parse_with_fixed_option_chain_snapshot() -> None:
-    option_chain_snapshot = [
-        {"expiration": "2026-01-17", "strike": 150, "type": "CALL"},
-        {"expiration": "2026-01-17", "strike": 155, "type": "CALL"},
-        {"expiration": "2026-01-17", "strike": 145, "type": "PUT"},
-    ]
+def test_end_to_end_build_parse_with_context_payload() -> None:
+    snapshot_payload = {
+        "symbol": "AAPL",
+        "snapshot_time": "2026-01-10T00:00:00Z",
+        "daily_snapshot": {
+            "wyckoff_regime": "MARKUP",
+            "wyckoff_regime_confidence": 0.7,
+            "wyckoff_regime_set_by_event": "SOS",
+            "events_json": {"events": ["SOS"]},
+            "bc_score": 10,
+            "spring_score": 4,
+            "composite_score": 12.5,
+            "technical_indicators_json": {"adx": 25},
+            "dealer_metrics_json": {"gamma_flip": 150.0},
+            "volatility_metrics_json": {"iv_rank": 55},
+            "price_metrics_json": {"close": 185.5},
+        },
+        "wyckoff_regime_transitions": [],
+        "wyckoff_sequences": [],
+        "wyckoff_sequence_events": [],
+        "wyckoff_snapshot_evidence": [],
+    }
     prompt_text = build_prompt(
-        snapshot_payload={
-            "symbol": "AAPL",
-            "snapshot_time": "2026-01-10T00:00:00Z",
-            "market_structure": {"wyckoff_regime": "MARKUP", "regime_confidence": 0.7},
-        },
-        option_context={
-            "option_chain_snapshot": option_chain_snapshot,
-            "option_selection_constraints": {"min_open_interest": 500},
-        },
+        snapshot_payload=snapshot_payload,
+        option_context={},
         authority_constraints={},
         instructions={},
         prompt_version="test",
     )
     payload = _extract_injected_payload(prompt_text)
-    assert payload["option_chain_snapshot"] == option_chain_snapshot
+    assert payload["daily_snapshot"]["wyckoff_regime"] == "MARKUP"
     response = normalize_agent_response(
         raw_response=json.dumps(_valid_response()),
         provider_id="openai",
@@ -78,40 +82,19 @@ def test_end_to_end_build_parse_with_fixed_option_chain_snapshot() -> None:
         prompt_version="test",
         kapman_model_version="test",
     )
-    assert response["context_evaluation"]["status"] == "ACCEPTED"
+    assert response["context_label"] == "MARKUP"
 
 
 @pytest.mark.integration
-def test_end_to_end_rejects_contracts_outside_fixture() -> None:
-    option_chain_snapshot = [
-        {"expiration": "2026-01-17", "strike": 150, "type": "CALL"},
-        {"expiration": "2026-01-17", "strike": 155, "type": "CALL"},
-        {"expiration": "2026-01-17", "strike": 145, "type": "PUT"},
-    ]
-    prompt_text = build_prompt(
-        snapshot_payload={
-            "symbol": "AAPL",
-            "snapshot_time": "2026-01-10T00:00:00Z",
-            "market_structure": {"wyckoff_regime": "MARKUP", "regime_confidence": 0.7},
-        },
-        option_context={
-            "option_chain_snapshot": option_chain_snapshot,
-            "option_selection_constraints": {"min_open_interest": 500},
-        },
-        authority_constraints={},
-        instructions={},
-        prompt_version="test",
-    )
+def test_end_to_end_rejects_missing_required_field() -> None:
     response = _valid_response()
-    response["option_recommendations"]["primary"].pop("stop_loss")
+    response.pop("context_label")
 
-    normalized = normalize_agent_response(
-        raw_response=json.dumps(response),
-        provider_id="openai",
-        model_id="gpt-5-mini",
-        prompt_version="test",
-        kapman_model_version="test",
-    )
-
-    assert normalized["context_evaluation"]["status"] == "REJECTED"
-    assert normalized["context_evaluation"]["failure_type"] == "SCHEMA_FAIL"
+    with pytest.raises(ValueError, match="Missing top-level key"):
+        normalize_agent_response(
+            raw_response=json.dumps(response),
+            provider_id="openai",
+            model_id="gpt-5-mini",
+            prompt_version="test",
+            kapman_model_version="test",
+        )
