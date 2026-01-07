@@ -1,8 +1,8 @@
 # KAPMAN TRADING SYSTEM - ARCHITECTURE & IMPLEMENTATION PROMPT
-**Version:** 3.3  
-**Date:** December 30, 2025  
-**Status:** Ready for Slice B Implementation  
-**Target MVP:** December 31, 2025
+**Version:** 3.4  
+**Date:** January 4, 2026  
+**Status:** Ready for Slice C Implementation  
+**Target MVP:** January 9, 2026
 
 ---
 ## Document Responsibilities & Precedence
@@ -718,6 +718,142 @@ These are consumer-layer heuristics; Wyckoff module outputs events/scores only; 
 pytest tests/unit -v
 pytest --cov=core tests/
 ```
+
+
+Below is a single, cohesive appendix block that defines A0–An first, then drills into A1 in detail.
+It is written to be copy-paste ready, neutral in tone, and consistent with the architecture you’ve already established.
+
+⸻
+
+Appendix — AI Layering Model (A0–An)
+
+KapMan organizes intelligence and decision-making into explicit, ordered layers to preserve determinism, auditability, and statistical validity. Each layer has strict responsibilities and hard boundaries.
+
+A0 — Deterministic Market State (Non-AI)
+
+A0 represents all non-AI, deterministic computation.
+
+Responsibilities
+	•	Compute and persist all market-derived facts:
+	•	Wyckoff regimes, phases, and events
+	•	Technical indicators
+	•	Dealer positioning and gamma metrics
+	•	Volatility measures
+	•	Liquidity and option-chain filters
+	•	Produce a fully materialized, replayable snapshot of market state.
+
+Invariants
+	•	Purely rule-based
+	•	Deterministic and idempotent
+	•	No probabilistic reasoning
+	•	No recommendations or opinions
+
+A0 outputs are treated as facts, not hypotheses.
+
+⸻
+
+A1 — Context Validation & Conditional Strategy Generator (AI Evaluation Interface)
+
+A1 is the first AI decision boundary in the KapMan architecture.
+
+It is a deterministic, schema-enforced AI evaluation interface that consumes the fully computed A0 market state and produces epistemic validation plus measurable, conditional strategy candidates.
+
+A1 does not pick trades and does not execute actions.
+Its role is to evaluate hypotheses about market context (e.g., Wyckoff regime) and, conditional on the weight of evidence, propose bounded, backtestable option strategies.
+
+Core Responsibilities
+	•	Treat provided market context (e.g., Wyckoff regime and events) as a hypothesis, not a fact.
+	•	Evaluate the hypothesis using only supplied A0 inputs (TA, dealer metrics, volatility, etc.).
+	•	Explicitly identify:
+	•	Supporting evidence
+	•	Contradicting evidence
+	•	Relative strength of acceptance or rejection
+	•	Generate measurable option strategy candidates conditional on evidence strength.
+
+Required Output Characteristics
+All A1 outputs must:
+	•	Conform to a single, versioned JSON schema
+	•	Be provider-agnostic (OpenAI, Claude, etc.)
+	•	Be fully backtestable, including:
+	•	Strategy type / structure
+	•	Strike(s)
+	•	Expiration(s)
+	•	Entry reference
+	•	Stop loss
+	•	Profit target
+	•	Include:
+	•	One primary recommendation
+	•	Two ranked alternatives
+	•	Explicit confidence attribution
+
+Explicit Non-Responsibilities
+A1 must not:
+	•	Recompute or override A0 logic
+	•	Introduce new indicators or metrics
+	•	Assume option availability, fills, or executability
+	•	Perform position sizing, portfolio construction, or risk aggregation
+	•	Execute trades or trigger downstream actions
+
+Invalid or non-conforming AI outputs are rejected, not normalized.
+
+⸻
+
+A2 — Portfolio & Policy Arbitration (Non-AI or Hybrid)
+
+A2 consumes A1 outputs and applies portfolio-level rules and constraints.
+
+Responsibilities
+	•	Enforce portfolio policies:
+	•	Exposure limits
+	•	Correlation constraints
+	•	Capital allocation rules
+	•	Compare multiple A1 outputs across symbols.
+	•	Decide whether any A1 recommendation is admissible.
+
+A2 may be rule-based or hybrid, but must remain deterministic for replay and validation.
+
+⸻
+
+A3 — Risk & Stress Overlays (Optional / Future)
+
+A3 applies scenario-based and stress-based overlays.
+
+Responsibilities
+	•	Macro stress testing
+	•	Tail-risk adjustments
+	•	Event-driven exclusion rules
+
+A3 modifies eligibility, not strategy definition.
+
+⸻
+
+A4–An — Execution, Monitoring, and Feedback (Out of Scope for MVP)
+
+Higher layers may include:
+	•	Order construction
+	•	Execution routing
+	•	Slippage and fill analysis
+	•	Post-trade attribution
+	•	Model performance analytics
+
+These layers are explicitly outside the A1 contract and the current MVP scope.
+
+⸻
+
+Layering Invariant
+
+A0 → A1 → A2 → A3 → … → An
+
+	•	Each layer consumes validated output from the previous layer.
+	•	No layer may “reach backward” and reinterpret upstream facts.
+	•	AI reasoning is isolated to A1.
+	•	Statistical validation is possible at every boundary.
+
+⸻
+
+If you want next, I can:
+	•	Align this block exactly to your existing section numbering and style, or
+	•	Extract this into a standalone docs/architecture/A_LAYERS.md with cross-references
 
 ---
 

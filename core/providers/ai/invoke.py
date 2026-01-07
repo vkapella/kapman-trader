@@ -251,25 +251,134 @@ def _validate_option_recommendations(
     kapman_model_version: str,
     invocation_id: str,
 ) -> dict:
-    snapshot_metadata = response.get("snapshot_metadata") or {}
-    if snapshot_metadata.get("ticker") == "UNKNOWN":
-        return response
+    context_eval = response.get("context_evaluation")
+    if not isinstance(context_eval, dict):
+        reason = "Schema validation failed: context_evaluation missing"
+        return _failure_response(
+            reason=reason,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            kapman_model_version=kapman_model_version,
+            failure_type="SCHEMA_FAIL",
+        )
 
-    primary = response.get("primary_recommendation") or {}
-    alternatives = response.get("alternative_recommendations") or []
+    status = context_eval.get("status")
+    failure_type = context_eval.get("failure_type")
+    if status == "REJECTED":
+        option_recommendations = response.get("option_recommendations")
+        if isinstance(option_recommendations, dict) and option_recommendations.get("primary") is not None:
+            reason = "Schema validation failed: primary must be null for rejection"
+            return _failure_response(
+                reason=reason,
+                provider_id=provider_id,
+                model_id=model_id,
+                prompt_version=prompt_version,
+                kapman_model_version=kapman_model_version,
+                failure_type="SCHEMA_FAIL",
+            )
+        if failure_type not in {"SCHEMA_FAIL", "INVALID_CHAIN", "CONTEXT_REJECTED"}:
+            reason = "Schema validation failed: invalid failure_type"
+            return _failure_response(
+                reason=reason,
+                provider_id=provider_id,
+                model_id=model_id,
+                prompt_version=prompt_version,
+                kapman_model_version=kapman_model_version,
+                failure_type="SCHEMA_FAIL",
+            )
+        return response
+    if status != "ACCEPTED":
+        reason = "Schema validation failed: invalid context status"
+        return _failure_response(
+            reason=reason,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            kapman_model_version=kapman_model_version,
+            failure_type="SCHEMA_FAIL",
+        )
+    if failure_type is not None:
+        reason = "Schema validation failed: failure_type must be null for acceptance"
+        return _failure_response(
+            reason=reason,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            kapman_model_version=kapman_model_version,
+            failure_type="SCHEMA_FAIL",
+        )
+
+    option_recommendations = response.get("option_recommendations")
+    if not isinstance(option_recommendations, dict):
+        reason = "Schema validation failed: option_recommendations missing"
+        return _failure_response(
+            reason=reason,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            kapman_model_version=kapman_model_version,
+            failure_type="SCHEMA_FAIL",
+        )
+    primary = option_recommendations.get("primary")
+    alternatives = option_recommendations.get("alternatives") or []
+    if primary is None or not isinstance(primary, dict):
+        reason = "Schema validation failed: primary recommendation missing"
+        return _failure_response(
+            reason=reason,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            kapman_model_version=kapman_model_version,
+            failure_type="SCHEMA_FAIL",
+        )
+    if not isinstance(alternatives, list):
+        reason = "Schema validation failed: alternatives must be a list"
+        return _failure_response(
+            reason=reason,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            kapman_model_version=kapman_model_version,
+            failure_type="SCHEMA_FAIL",
+        )
 
     primary_contracts, primary_errors = _collect_recommendation_contracts(primary)
-    alternatives_info: list[tuple[int, dict, list[tuple[date, Decimal, str]], list[str]]] = []
-    should_validate = bool(primary_contracts or primary_errors)
+    if primary_errors or not primary_contracts:
+        reason = f"Schema validation failed: {sorted(set(primary_errors or ['missing_contract']))}"
+        return _failure_response(
+            reason=reason,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            kapman_model_version=kapman_model_version,
+            failure_type="SCHEMA_FAIL",
+        )
 
-    for idx, alt in enumerate(alternatives):
+    alternative_contracts: list[tuple[date, Decimal, str]] = []
+    for alt in alternatives:
+        if not isinstance(alt, dict):
+            reason = "Schema validation failed: alternative must be an object"
+            return _failure_response(
+                reason=reason,
+                provider_id=provider_id,
+                model_id=model_id,
+                prompt_version=prompt_version,
+                kapman_model_version=kapman_model_version,
+                failure_type="SCHEMA_FAIL",
+            )
         contracts, errors = _collect_recommendation_contracts(alt)
-        if contracts or errors:
-            should_validate = True
-        alternatives_info.append((idx, alt, contracts, errors))
-
-    if not should_validate:
-        return response
+        if errors or not contracts:
+            reason = f"Schema validation failed: {sorted(set(errors or ['missing_contract']))}"
+            return _failure_response(
+                reason=reason,
+                provider_id=provider_id,
+                model_id=model_id,
+                prompt_version=prompt_version,
+                kapman_model_version=kapman_model_version,
+                failure_type="SCHEMA_FAIL",
+            )
+        alternative_contracts.extend(contracts)
 
     try:
         valid_expirations, valid_contracts, options_time = _load_option_chain_context(snapshot_payload)
@@ -281,6 +390,7 @@ def _validate_option_recommendations(
             model_id=model_id,
             prompt_version=prompt_version,
             kapman_model_version=kapman_model_version,
+            failure_type="SCHEMA_FAIL",
         )
 
     def _contract_errors(contracts: list[tuple[date, Decimal, str]]) -> list[str]:
@@ -293,48 +403,28 @@ def _validate_option_recommendations(
                 errors.append("invalid_strike")
         return errors
 
-    primary_validation_errors = list(primary_errors)
-    if primary_contracts:
-        primary_validation_errors.extend(_contract_errors(primary_contracts))
-    if primary_validation_errors:
+    validation_errors = _contract_errors(primary_contracts)
+    validation_errors.extend(_contract_errors(alternative_contracts))
+    if validation_errors:
         _log_event(
             invocation_id,
             "option_validation_drop",
             {
-                "role": "primary",
-                "errors": primary_validation_errors,
+                "role": "all",
+                "errors": validation_errors,
                 "options_time": options_time.isoformat(),
             },
         )
-        reason = f"Invalid option contract in primary recommendation: {sorted(set(primary_validation_errors))}"
+        reason = f"Invalid option contract: {sorted(set(validation_errors))}"
         return _failure_response(
             reason=reason,
             provider_id=provider_id,
             model_id=model_id,
             prompt_version=prompt_version,
             kapman_model_version=kapman_model_version,
+            failure_type="INVALID_CHAIN",
         )
 
-    filtered_alternatives: list[dict] = []
-    for idx, alt, contracts, errors in alternatives_info:
-        validation_errors = list(errors)
-        if contracts:
-            validation_errors.extend(_contract_errors(contracts))
-        if validation_errors:
-            _log_event(
-                invocation_id,
-                "option_validation_drop",
-                {
-                    "role": "alternative",
-                    "index": idx,
-                    "errors": validation_errors,
-                    "options_time": options_time.isoformat(),
-                },
-            )
-            continue
-        filtered_alternatives.append(alt)
-
-    response["alternative_recommendations"] = filtered_alternatives
     return response
 
 
@@ -371,6 +461,19 @@ def _build_stub_response(
     }
     return {
         "snapshot_metadata": snapshot_metadata,
+        "context_evaluation": {
+            "status": "REJECTED",
+            "failure_type": "SCHEMA_FAIL",
+            "reason": "Dry-run mode enabled.",
+        },
+        "option_recommendations": {"primary": None, "alternatives": []},
+        "confidence_summary": {
+            "score": 0.0,
+            "summary": "dry_run",
+            "confidence_type": "RELATIVE",
+            "ranking_basis": "Primary outranks alternatives by construction",
+            "confidence_gap_notes": None,
+        },
         "primary_recommendation": {
             "action": "NO_TRADE",
             "strategy_class": "NONE",
@@ -395,11 +498,6 @@ def _build_stub_response(
             "cluster_contributions": [{"cluster": "Meta", "impact": "DRY_RUN"}],
             "supporting_factors": [],
             "blocking_factors": ["Dry-run mode enabled."],
-        },
-        "confidence_summary": {
-            "confidence_type": "RELATIVE",
-            "ranking_basis": "Primary outranks alternatives by construction",
-            "confidence_gap_notes": None,
         },
         "missing_data_declaration": ["Dry-run stub response."],
         "guardrails_and_disclaimers": list(STANDARD_GUARDRAILS),

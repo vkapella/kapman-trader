@@ -195,6 +195,81 @@ def _load_daily_snapshot(conn, *, ticker_id: str, snapshot_time: datetime) -> Op
     }
 
 
+def _load_option_chain_snapshot(
+    conn, *, ticker_id: str, snapshot_time: datetime
+) -> Optional[list[dict[str, Any]]]:
+    if conn is None:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT expiration_date,
+                   strike_price,
+                   option_type,
+                   bid,
+                   ask,
+                   last,
+                   volume,
+                   open_interest,
+                   implied_volatility,
+                   delta,
+                   gamma,
+                   theta,
+                   vega
+            FROM options_chains
+            WHERE ticker_id = %s
+              AND time = (
+                  SELECT MAX(time)
+                  FROM options_chains
+                  WHERE ticker_id = %s
+                    AND time <= %s
+              )
+            ORDER BY expiration_date ASC, strike_price ASC, option_type ASC
+            """,
+            (ticker_id, ticker_id, snapshot_time),
+        )
+        rows = cur.fetchall()
+
+    snapshot_date = snapshot_time.date()
+    option_chain_snapshot: list[dict[str, Any]] = []
+    for (
+        expiration_date,
+        strike_price,
+        option_type,
+        bid,
+        ask,
+        last,
+        volume,
+        open_interest,
+        implied_volatility,
+        delta,
+        gamma,
+        theta,
+        vega,
+    ) in rows:
+        exp_date = _normalize_option_expiration(expiration_date)
+        if exp_date is None or exp_date < snapshot_date:
+            continue
+        option_chain_snapshot.append(
+            {
+                "expiration_date": exp_date.isoformat(),
+                "strike_price": _format_decimal(strike_price),
+                "option_type": option_type,
+                "bid": _format_decimal(bid),
+                "ask": _format_decimal(ask),
+                "last": _format_decimal(last),
+                "volume": volume,
+                "open_interest": open_interest,
+                "implied_volatility": _format_decimal(implied_volatility),
+                "delta": _format_decimal(delta),
+                "gamma": _format_decimal(gamma),
+                "theta": _format_decimal(theta),
+                "vega": _format_decimal(vega),
+            }
+        )
+    return option_chain_snapshot
+
+
 def _coerce_events(events: Any) -> list[str]:
     if events is None:
         return []
@@ -775,17 +850,6 @@ def run_batch_ai_screening(
                 "data_completeness_flags": data_flags,
             }
 
-            option_context = {
-                "spot_price": spot_price,
-                "expiration_buckets": list(DEFAULT_EXPIRATION_BUCKETS),
-                "moneyness_bands": list(DEFAULT_MONEYNESS_BANDS),
-                "liquidity_constraints": {
-                    "min_open_interest": DEFAULT_MIN_OPEN_INTEREST,
-                    "min_volume": DEFAULT_MIN_VOLUME,
-                },
-                "volatility_regime_summary": volatility_summary,
-            }
-
             invocation_id = _invocation_id(
                 symbol=symbol,
                 snapshot_time=snapshot_ts,
@@ -808,6 +872,25 @@ def run_batch_ai_screening(
                         "attempt": attempt,
                     },
                 )
+
+                option_chain_snapshot = None
+                if conn is not None:
+                    option_chain_snapshot = _load_option_chain_snapshot(
+                        conn,
+                        ticker_id=ticker_id,
+                        snapshot_time=snapshot_ts,
+                    )
+                option_context = {
+                    "spot_price": spot_price,
+                    "expiration_buckets": list(DEFAULT_EXPIRATION_BUCKETS),
+                    "moneyness_bands": list(DEFAULT_MONEYNESS_BANDS),
+                    "liquidity_constraints": {
+                        "min_open_interest": DEFAULT_MIN_OPEN_INTEREST,
+                        "min_volume": DEFAULT_MIN_VOLUME,
+                    },
+                    "volatility_regime_summary": volatility_summary,
+                    "option_chain_snapshot": option_chain_snapshot,
+                }
 
                 response = invoke_planning_agent(
                     provider_id=provider_key,

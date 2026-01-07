@@ -8,6 +8,10 @@ set -a
 source .env
 set +a
 
+## Start/Stop Docker Env
+docker compose up -d
+docker compose down
+
 ## DATABASE ACCESS
 
 docker exec -it kapman-db psql -U kapman -d kapman 
@@ -309,22 +313,27 @@ optional arguments:
 
 KapMan C4: Batch AI screening execution
 
-python -m tools.run_c4_batch_ai_screening --help  
+python -m scripts.run_c4_batch_ai_screening --help  
 
-usage: run_c4_batch_ai_screening.py [-h] [--db-url DB_URL] [--snapshot-time SNAPSHOT_TIME] --provider {anthropic,openai} --model MODEL --batch-size BATCH_SIZE --batch-wait-seconds BATCH_WAIT_SECONDS --max-retries MAX_RETRIES --backoff-base-seconds BACKOFF_BASE_SECONDS --dry-run --log-level {DEBUG,INFO,WARNING,ERROR}  
+Usage: run_c4_batch_ai_screening.py [-h] [--db-url DB_URL] [--snapshot-time SNAPSHOT_TIME] --provider {anthropic,openai} --model MODEL [--batch-size BATCH_SIZE]
+[--batch-wait-seconds BATCH_WAIT_SECONDS] [--max-retries MAX_RETRIES] [--backoff-base-seconds BACKOFF_BASE_SECONDS] [--dry-run]  [--log-level {DEBUG,INFO,WARNING,ERROR}] [--symbols SYMBOLS] [--llm-trace {off,summary,full}] [--llm-trace-dir LLM_TRACE_DIR]
+
 
 optional arguments:
-  -h, --help            #show this help message and exit
+  -h, --help            # show this help message and exit
   --db-url DB_URL       #Override DATABASE_URL
   --snapshot-time SNAPSHOT_TIME #Snapshot time (ISO 8601)
   --provider {anthropic,openai} #Provider (anthropic or openai)
   --model MODEL         #Model name
-  --batch-size BATCH_SIZE #Batch size
-  --batch-wait-seconds BATCH_WAIT_SECONDS #Batch wait seconds
-  --max-retries MAX_RETRIES #Max retries
-  --backoff-base-seconds BACKOFF_BASE_SECONDS #Backoff base seconds
+  --batch-size BATCH_SIZE
+  --batch-wait-seconds BATCH_WAIT_SECONDS
+  --max-retries MAX_RETRIES
+  --backoff-base-seconds BACKOFF_BASE_SECONDS
   --dry-run
   --log-level {DEBUG,INFO,WARNING,ERROR}
+  --symbols SYMBOLS     #Comma-delimited list of symbols
+  --llm-trace {off,summary,full} #LLM trace level
+  --llm-trace-dir LLM_TRACE_DIR #LLM trace directory
 
 
 
