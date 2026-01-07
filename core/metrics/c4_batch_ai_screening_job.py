@@ -22,6 +22,7 @@ from psycopg2.extras import execute_values
 
 from core.ingestion.options.db import default_db_url
 from core.providers.ai.invoke import invoke_planning_agent
+from core.providers.ai.prompt_loader import load_prompt, load_schema
 
 logger = logging.getLogger("kapman.c4")
 
@@ -83,12 +84,21 @@ def _git_revision() -> str:
         return "unknown"
 
 
+def _prompt_version_hash() -> str:
+    payload = {
+        "system_prompt": load_prompt("system/wyckoff_context_evaluator.v1.system.md"),
+        "user_prompt": load_prompt("user/wyckoff_context_evaluator.v1.user.md"),
+        "schema": load_schema("ai/wyckoff_context_evaluation.v1.schema.json"),
+    }
+    digest = hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
 def _resolve_model_version() -> str:
     override = os.getenv("KAPMAN_C4_MODEL_VERSION")
     if override:
         return override
-    sha = _git_revision()
-    return f"c4-batch-ai-screening@{sha}"
+    return f"wyckoff-context@{_prompt_version_hash()}"
 
 
 MODEL_VERSION = _resolve_model_version()
@@ -171,10 +181,14 @@ def _load_daily_snapshot(conn, *, ticker_id: str, snapshot_time: datetime) -> Op
             SELECT
                 wyckoff_regime,
                 wyckoff_regime_confidence,
-                events_detected,
+                wyckoff_regime_set_by_event,
+                events_json,
+                bc_score,
+                spring_score,
+                composite_score,
                 technical_indicators_json,
-                volatility_metrics_json,
                 dealer_metrics_json,
+                volatility_metrics_json,
                 price_metrics_json
             FROM daily_snapshots
             WHERE time = %s AND ticker_id = %s
@@ -187,11 +201,152 @@ def _load_daily_snapshot(conn, *, ticker_id: str, snapshot_time: datetime) -> Op
     return {
         "wyckoff_regime": row[0],
         "wyckoff_regime_confidence": row[1],
-        "events_detected": row[2],
-        "technical_summary": _normalize_json_value(row[3]),
-        "volatility_summary": _normalize_json_value(row[4]),
-        "dealer_summary": _normalize_json_value(row[5]),
-        "price_summary": _normalize_json_value(row[6]),
+        "wyckoff_regime_set_by_event": row[2],
+        "events_json": _normalize_json_value(row[3]),
+        "bc_score": row[4],
+        "spring_score": row[5],
+        "composite_score": row[6],
+        "technical_indicators_json": _normalize_json_value(row[7]),
+        "dealer_metrics_json": _normalize_json_value(row[8]),
+        "volatility_metrics_json": _normalize_json_value(row[9]),
+        "price_metrics_json": _normalize_json_value(row[10]),
+    }
+
+
+def _serialize_date(value: Any) -> Optional[str]:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if value is None:
+        return None
+    return str(value)
+
+
+def _load_wyckoff_regime_transitions(
+    conn, *, ticker_id: str, snapshot_date: date
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT date, prior_regime, new_regime, duration_bars
+            FROM wyckoff_regime_transitions
+            WHERE ticker_id = %s AND date <= %s
+            ORDER BY date ASC
+            """,
+            (ticker_id, snapshot_date),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "date": _serialize_date(row[0]),
+            "prior_regime": row[1],
+            "new_regime": row[2],
+            "duration_bars": row[3],
+        }
+        for row in rows
+    ]
+
+
+def _load_wyckoff_sequences(conn, *, ticker_id: str, snapshot_date: date) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT sequence_id, start_date, completion_date, events_in_sequence
+            FROM wyckoff_sequences
+            WHERE ticker_id = %s AND completion_date <= %s
+            ORDER BY completion_date ASC, sequence_id ASC
+            """,
+            (ticker_id, snapshot_date),
+        )
+        rows = cur.fetchall()
+    sequences = []
+    for row in rows:
+        sequences.append(
+            {
+                "sequence_id": row[0],
+                "start_date": _serialize_date(row[1]),
+                "completion_date": _serialize_date(row[2]),
+                "events_in_sequence": _normalize_json_value(row[3]),
+            }
+        )
+    return sequences
+
+
+def _load_wyckoff_sequence_events(
+    conn, *, ticker_id: str, snapshot_date: date
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT sequence_id, completion_date, event_type, event_date, event_role, event_order
+            FROM wyckoff_sequence_events
+            WHERE ticker_id = %s AND completion_date <= %s
+            ORDER BY completion_date ASC, event_order ASC
+            """,
+            (ticker_id, snapshot_date),
+        )
+        rows = cur.fetchall()
+    events = []
+    for row in rows:
+        events.append(
+            {
+                "sequence_id": row[0],
+                "completion_date": _serialize_date(row[1]),
+                "event_type": row[2],
+                "event_date": _serialize_date(row[3]),
+                "event_role": row[4],
+                "event_order": row[5],
+            }
+        )
+    return events
+
+
+def _load_wyckoff_snapshot_evidence(
+    conn, *, ticker_id: str, snapshot_date: date
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT date, evidence_json
+            FROM wyckoff_snapshot_evidence
+            WHERE ticker_id = %s AND date <= %s
+            ORDER BY date ASC
+            """,
+            (ticker_id, snapshot_date),
+        )
+        rows = cur.fetchall()
+    evidence = []
+    for row in rows:
+        evidence.append(
+            {
+                "date": _serialize_date(row[0]),
+                "evidence_json": _normalize_json_value(row[1]),
+            }
+        )
+    return evidence
+
+
+def _build_context_payload(
+    *,
+    ticker_id: str,
+    symbol: str,
+    snapshot_time: datetime,
+    daily_snapshot: dict[str, Any],
+    regime_transitions: list[dict[str, Any]],
+    sequences: list[dict[str, Any]],
+    sequence_events: list[dict[str, Any]],
+    snapshot_evidence: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "snapshot_time": snapshot_time.isoformat(),
+        "ticker_id": ticker_id,
+        "symbol": symbol,
+        "daily_snapshot": daily_snapshot,
+        "wyckoff_regime_transitions": regime_transitions,
+        "wyckoff_sequences": sequences,
+        "wyckoff_sequence_events": sequence_events,
+        "wyckoff_snapshot_evidence": snapshot_evidence,
     }
 
 
@@ -310,9 +465,9 @@ def _normalize_recommendation_direction(value: Any) -> str:
     if value is None:
         return "NEUTRAL"
     text = str(value).strip().upper()
-    if text == "BULLISH":
+    if text in {"BULLISH", "LONG"}:
         return "LONG"
-    if text == "BEARISH":
+    if text in {"BEARISH", "SHORT"}:
         return "SHORT"
     if text == "NEUTRAL":
         return "NEUTRAL"
@@ -330,25 +485,26 @@ def _normalize_recommendation_action(action: Any, direction: str, strategy_class
     if action is None:
         return "HOLD"
     text = str(action).strip().upper()
-    if text == "ENTER":
-        if strategy_class == "HEDGE_OVERLAY":
-            return "HEDGE"
+    if text == "PROCEED":
         if direction == "SHORT":
             return "SELL"
         if direction == "LONG":
             return "BUY"
         return "HOLD"
-    if text in {"WAIT", "DEFER", "NO_TRADE"}:
+    if text in {"HOLD", "AVOID"}:
         return "HOLD"
+    if text in {"BUY", "SELL", "HEDGE"}:
+        return text
     return "HOLD"
 
 
 def _normalize_option_strategy(strategy_class: Optional[str]) -> Optional[str]:
     if not strategy_class:
         return None
-    if strategy_class in {"LONG_CALL", "LONG_PUT", "CSP"}:
-        return strategy_class
-    if strategy_class in {"CALL_DEBIT_SPREAD", "PUT_DEBIT_SPREAD"}:
+    text = str(strategy_class).strip().upper()
+    if text in {"LONG_CALL", "LONG_PUT", "CSP", "VERTICAL_SPREAD"}:
+        return text
+    if text in {"CALL_DEBIT_SPREAD", "PUT_DEBIT_SPREAD"}:
         return "VERTICAL_SPREAD"
     return None
 
@@ -360,10 +516,9 @@ def _normalize_confidence(value: Any) -> Optional[Decimal]:
         score = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
-    normalized = score / Decimal("100")
-    if normalized < 0 or normalized > 1:
+    if score < 0 or score > 1:
         return None
-    return normalized.quantize(Decimal("0.001"))
+    return score.quantize(Decimal("0.001"))
 
 
 def _normalize_option_strike(value: Any) -> Optional[Decimal]:
@@ -453,95 +608,26 @@ def _build_recommendation_row(
     ai_model: str,
     response: dict[str, Any],
 ) -> Optional[tuple]:
-    metadata = response.get("snapshot_metadata") or {}
-    ticker = metadata.get("ticker")
-    if not isinstance(ticker, str) or ticker.upper() == "UNKNOWN":
-        if os.getenv("AI_DUMP") == "1":
-            log = logging.getLogger("kapman.ai.c4")
-            log.info(
-                "[AI_DUMP] "
-                + json.dumps(
-                    {
-                        "event": "recommendation_dropped",
-                        "reason": "unknown_ticker",
-                        "symbol": symbol,
-                        "primary_recommendation": response.get("primary_recommendation"),
-                    },
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                )
-            )
-            log.warning(
-                "[AI_DUMP] "
-                + json.dumps(
-                    {
-                        "event": "ai_zero_recommendations",
-                        "ticker": symbol,
-                        "model": ai_model,
-                        "reason": "unknown_ticker",
-                    },
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                )
-            )
+    if not isinstance(response, dict):
         return None
-    primary = response.get("primary_recommendation")
-    if not isinstance(primary, dict):
-        if os.getenv("AI_DUMP") == "1":
-            log = logging.getLogger("kapman.ai.c4")
-            log.info(
-                "[AI_DUMP] "
-                + json.dumps(
-                    {
-                        "event": "recommendation_dropped",
-                        "reason": "missing_primary_recommendation",
-                        "symbol": symbol,
-                        "primary_recommendation": primary,
-                    },
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                )
-            )
-            log.warning(
-                "[AI_DUMP] "
-                + json.dumps(
-                    {
-                        "event": "ai_zero_recommendations",
-                        "ticker": symbol,
-                        "model": ai_model,
-                        "reason": "missing_primary_recommendation",
-                    },
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                )
-            )
+    conditional = response.get("conditional_recommendation")
+    if not isinstance(conditional, dict):
         return None
 
-    strategy_class = _normalize_strategy_class(primary.get("strategy_class"))
-    direction = _normalize_recommendation_direction(primary.get("direction"))
-    action = _normalize_recommendation_action(primary.get("action"), direction, strategy_class)
-    confidence = _normalize_confidence(primary.get("confidence_score"))
-    rationale = primary.get("rationale_summary")
-    justification = rationale if isinstance(rationale, str) else (None if rationale is None else str(rationale))
-    option_strike = _normalize_option_strike(primary.get("option_strike"))
-    option_expiration = _normalize_option_expiration(primary.get("option_expiration"))
-    option_type = _normalize_option_type(primary.get("option_type"))
-    option_strategy = _normalize_option_strategy(strategy_class)
+    direction = _normalize_recommendation_direction(conditional.get("direction"))
+    action = _normalize_recommendation_action(conditional.get("action"), direction, None)
+    confidence = _normalize_confidence(response.get("confidence_score"))
+    justification = _canonical_json(response)
+    option_type = _normalize_option_type(conditional.get("option_type"))
+    option_strategy = _normalize_option_strategy(conditional.get("option_strategy"))
 
-    identity_payload = _recommendation_identity_payload(
-        symbol=symbol,
-        snapshot_time=snapshot_time,
-        provider_key=provider_key,
-        ai_model=ai_model,
-        action=action,
-        direction=direction,
-        strategy_class=strategy_class,
-        option_expiration=option_expiration,
-        option_strike=option_strike,
-        option_type=option_type,
-    )
+    identity_payload = {
+        "ticker_id": ticker_id,
+        "snapshot_time": snapshot_time.isoformat(),
+        "scope": "context_evaluation",
+    }
     recommendation_id = _deterministic_recommendation_id(identity_payload)
-    model_version = metadata.get("model_version") or MODEL_VERSION
+    model_version = MODEL_VERSION
     created_at = datetime.now(timezone.utc)
 
     return (
@@ -557,8 +643,8 @@ def _build_recommendation_row(
         None,
         None,
         None,
-        option_strike,
-        option_expiration,
+        None,
+        None,
         option_type,
         option_strategy,
         "active",
@@ -600,7 +686,25 @@ def _persist_recommendations(
             created_at
         )
         VALUES %s
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (id) DO UPDATE SET
+            snapshot_time = EXCLUDED.snapshot_time,
+            ticker_id = EXCLUDED.ticker_id,
+            recommendation_date = EXCLUDED.recommendation_date,
+            direction = EXCLUDED.direction,
+            action = EXCLUDED.action,
+            confidence = EXCLUDED.confidence,
+            justification = EXCLUDED.justification,
+            entry_price_target = EXCLUDED.entry_price_target,
+            stop_loss = EXCLUDED.stop_loss,
+            profit_target = EXCLUDED.profit_target,
+            risk_reward_ratio = EXCLUDED.risk_reward_ratio,
+            option_strike = EXCLUDED.option_strike,
+            option_expiration = EXCLUDED.option_expiration,
+            option_type = EXCLUDED.option_type,
+            option_strategy = EXCLUDED.option_strategy,
+            status = EXCLUDED.status,
+            model_version = EXCLUDED.model_version,
+            created_at = EXCLUDED.created_at
     """
 
     total = 0
@@ -637,22 +741,11 @@ def _data_completeness_flags(
 
 
 def _build_authority_constraints() -> dict[str, Any]:
-    return {
-        "wyckoff_veto": False,
-        "iv_forbids_long_premium": False,
-        "dealer_timing_veto": False,
-    }
+    return {}
 
 
 def _build_instructions() -> dict[str, Any]:
-    return {
-        "objective": "produce ranked trade recommendations",
-        "forbidden_actions": [
-            "assume strike existence",
-            "assume expiration existence",
-            "claim executability",
-        ],
-    }
+    return {}
 
 
 def _invocation_id(
@@ -790,65 +883,38 @@ def run_batch_ai_screening(
                 )
                 continue
 
-            technical_summary = snapshot_row.get("technical_summary")
-            volatility_summary = snapshot_row.get("volatility_summary")
-            dealer_summary = snapshot_row.get("dealer_summary")
-            price_summary = snapshot_row.get("price_summary")
-
-            missing_fields = []
-            if not isinstance(technical_summary, dict):
-                missing_fields.append("technical_indicators_json")
-            if not isinstance(volatility_summary, dict):
-                missing_fields.append("volatility_metrics_json")
-            if not isinstance(dealer_summary, dict):
-                missing_fields.append("dealer_metrics_json")
-            if missing_fields:
-                stats.skipped += 1
-                _log_event(
-                    log,
-                    "ticker_skip",
-                    {
-                        "ticker": symbol,
-                        "batch_id": batch_index,
-                        "reason": "missing_snapshot_fields",
-                        "missing_fields": missing_fields,
-                    },
-                )
-                continue
-
-            spot_price = _resolve_spot_price(dealer_summary=dealer_summary, price_summary=price_summary)
-            if spot_price is None:
-                stats.skipped += 1
-                _log_event(
-                    log,
-                    "ticker_skip",
-                    {
-                        "ticker": symbol,
-                        "batch_id": batch_index,
-                        "reason": "missing_spot_price",
-                    },
-                )
-                continue
-
-            data_flags = _data_completeness_flags(
-                technical_summary=technical_summary,
-                volatility_summary=volatility_summary,
-                dealer_summary=dealer_summary,
+            snapshot_date = snapshot_ts.date()
+            regime_transitions = _load_wyckoff_regime_transitions(
+                conn,
+                ticker_id=ticker_id,
+                snapshot_date=snapshot_date,
+            )
+            sequences = _load_wyckoff_sequences(
+                conn,
+                ticker_id=ticker_id,
+                snapshot_date=snapshot_date,
+            )
+            sequence_events = _load_wyckoff_sequence_events(
+                conn,
+                ticker_id=ticker_id,
+                snapshot_date=snapshot_date,
+            )
+            snapshot_evidence = _load_wyckoff_snapshot_evidence(
+                conn,
+                ticker_id=ticker_id,
+                snapshot_date=snapshot_date,
             )
 
-            snapshot_payload = {
-                "symbol": symbol,
-                "snapshot_time": snapshot_ts.isoformat(),
-                "market_structure": {
-                    "wyckoff_regime": snapshot_row.get("wyckoff_regime") or "UNKNOWN",
-                    "wyckoff_events": _coerce_events(snapshot_row.get("events_detected")),
-                    "regime_confidence": _try_float(snapshot_row.get("wyckoff_regime_confidence")) or 0.0,
-                },
-                "technical_summary": technical_summary,
-                "volatility_summary": volatility_summary,
-                "dealer_summary": dealer_summary,
-                "data_completeness_flags": data_flags,
-            }
+            snapshot_payload = _build_context_payload(
+                ticker_id=ticker_id,
+                symbol=symbol,
+                snapshot_time=snapshot_ts,
+                daily_snapshot=snapshot_row,
+                regime_transitions=regime_transitions,
+                sequences=sequences,
+                sequence_events=sequence_events,
+                snapshot_evidence=snapshot_evidence,
+            )
 
             invocation_id = _invocation_id(
                 symbol=symbol,
@@ -858,6 +924,8 @@ def run_batch_ai_screening(
             )
 
             attempt = 0
+            response = None
+            error_reason = None
             while True:
                 attempt += 1
                 _log_event(
@@ -873,55 +941,28 @@ def run_batch_ai_screening(
                     },
                 )
 
-                option_chain_snapshot = None
-                if conn is not None:
-                    option_chain_snapshot = _load_option_chain_snapshot(
-                        conn,
-                        ticker_id=ticker_id,
-                        snapshot_time=snapshot_ts,
+                try:
+                    response = invoke_planning_agent(
+                        provider_id=provider_key,
+                        model_id=ai_model,
+                        snapshot_payload=snapshot_payload,
+                        option_context={},
+                        authority_constraints=_build_authority_constraints(),
+                        instructions=_build_instructions(),
+                        prompt_version=MODEL_VERSION,
+                        kapman_model_version=MODEL_VERSION,
+                        debug=False,
+                        dry_run=dry_run,
                     )
-                option_context = {
-                    "spot_price": spot_price,
-                    "expiration_buckets": list(DEFAULT_EXPIRATION_BUCKETS),
-                    "moneyness_bands": list(DEFAULT_MONEYNESS_BANDS),
-                    "liquidity_constraints": {
-                        "min_open_interest": DEFAULT_MIN_OPEN_INTEREST,
-                        "min_volume": DEFAULT_MIN_VOLUME,
-                    },
-                    "volatility_regime_summary": volatility_summary,
-                    "option_chain_snapshot": option_chain_snapshot,
-                }
+                    error_reason = None
+                except Exception as exc:
+                    response = None
+                    error_reason = str(exc)
 
-                response = invoke_planning_agent(
-                    provider_id=provider_key,
-                    model_id=ai_model,
-                    snapshot_payload=snapshot_payload,
-                    option_context=option_context,
-                    authority_constraints=_build_authority_constraints(),
-                    instructions=_build_instructions(),
-                    prompt_version=MODEL_VERSION,
-                    kapman_model_version=MODEL_VERSION,
-                    debug=False,
-                    dry_run=dry_run,
-                )
-
-                if not dry_run:
-                    row = _build_recommendation_row(
-                        ticker_id=ticker_id,
-                        symbol=symbol,
-                        snapshot_time=snapshot_ts,
-                        provider_key=provider_key,
-                        ai_model=ai_model,
-                        response=response,
-                    )
-                    if row is not None:
-                        batch_rows.append(row)
-
-                reason = _extract_failure_reason(response)
-                if reason:
-                    classification = _classify_failure(reason)
+                if response is None:
+                    classification = _classify_failure(error_reason or "")
                     if classification == "config_error":
-                        raise ValueError(reason)
+                        raise ValueError(error_reason)
                     if classification in {"rate_limit", "transient"} and attempt <= max_retries:
                         backoff_seconds = compute_backoff_seconds(
                             attempt=attempt,
@@ -935,48 +976,60 @@ def run_batch_ai_screening(
                                 "ticker": symbol,
                                 "batch_id": batch_index,
                                 "attempt": attempt,
-                                "reason": reason,
+                                "reason": error_reason,
                                 "backoff_seconds": backoff_seconds,
                             },
                         )
                         if backoff_seconds > 0:
                             time.sleep(backoff_seconds)
                         continue
-
-                record = {
-                    "ticker": symbol,
-                    "snapshot_time": snapshot_ts.isoformat(),
-                    "ai_provider": provider_key,
-                    "ai_model": ai_model,
-                    "raw_normalized_response": response,
-                }
-                responses.append(record)
-                stats.processed += 1
-
-                if reason and _classify_failure(reason) in {"rate_limit", "transient"}:
-                    stats.failed += 1
-                    _log_event(
-                        log,
-                        "ticker_failure",
-                        {
-                            "invocation_id": invocation_id,
-                            "ticker": symbol,
-                            "batch_id": batch_index,
-                            "reason": reason,
-                        },
-                    )
-                else:
-                    stats.success += 1
-                    _log_event(
-                        log,
-                        "ticker_success",
-                        {
-                            "invocation_id": invocation_id,
-                            "ticker": symbol,
-                            "batch_id": batch_index,
-                        },
-                    )
                 break
+
+            if response is not None and not dry_run:
+                row = _build_recommendation_row(
+                    ticker_id=ticker_id,
+                    symbol=symbol,
+                    snapshot_time=snapshot_ts,
+                    provider_key=provider_key,
+                    ai_model=ai_model,
+                    response=response,
+                )
+                if row is not None:
+                    batch_rows.append(row)
+
+            record = {
+                "ticker": symbol,
+                "snapshot_time": snapshot_ts.isoformat(),
+                "ai_provider": provider_key,
+                "ai_model": ai_model,
+                "raw_normalized_response": response if response is not None else {"error": error_reason},
+            }
+            responses.append(record)
+            stats.processed += 1
+
+            if response is None:
+                stats.failed += 1
+                _log_event(
+                    log,
+                    "ticker_failure",
+                    {
+                        "invocation_id": invocation_id,
+                        "ticker": symbol,
+                        "batch_id": batch_index,
+                        "reason": error_reason,
+                    },
+                )
+            else:
+                stats.success += 1
+                _log_event(
+                    log,
+                    "ticker_success",
+                    {
+                        "invocation_id": invocation_id,
+                        "ticker": symbol,
+                        "batch_id": batch_index,
+                    },
+                )
 
         if not dry_run:
             try:

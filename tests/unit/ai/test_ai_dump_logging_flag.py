@@ -5,20 +5,17 @@ from core.providers.ai.response_parser import normalize_agent_response
 
 def _minimal_valid_response() -> dict:
     return {
-        "snapshot_metadata": {
-            "ticker": "AAPL",
-            "snapshot_time": "2026-01-10T00:00:00+00:00",
+        "context_label": "UNKNOWN",
+        "confidence_score": 0.2,
+        "metric_assessment": {"supporting": [], "contradicting": [], "neutral": []},
+        "metric_weights": {},
+        "discarded_metrics": ["insufficient_data"],
+        "conditional_recommendation": {
+            "direction": "NEUTRAL",
+            "action": "HOLD",
+            "option_type": None,
+            "option_strategy": None,
         },
-        "context_evaluation": {
-            "status": "REJECTED",
-            "failure_type": "CONTEXT_REJECTED",
-            "reason": "Evidence is insufficient.",
-        },
-        "option_recommendations": {
-            "primary": None,
-            "alternatives": [],
-        },
-        "confidence_summary": {"score": 0.2},
     }
 
 

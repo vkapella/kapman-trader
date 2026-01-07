@@ -22,6 +22,12 @@ def _split_combined_prompt(system_prompt: str, user_prompt: str) -> Tuple[str, s
     return system_prompt, user_prompt
 
 
+def _wrap_schema(schema: dict) -> dict:
+    if isinstance(schema, dict) and "schema" in schema:
+        return schema
+    return {"name": "wyckoff_context_evaluation_v1", "schema": schema}
+
+
 def _content_text(content_block: Any) -> str:
     if hasattr(content_block, "text"):
         return str(content_block.text)
@@ -47,7 +53,7 @@ class ClaudeProvider(AIProvider):
 
     async def invoke(self, model_id: str, system_prompt: str, user_prompt: str) -> ProviderResponse:
         system_prompt, user_prompt = _split_combined_prompt(system_prompt, user_prompt)
-        schema = load_schema(SCHEMA_NAME)
+        schema = _wrap_schema(load_schema(SCHEMA_NAME))
         response = self.client.messages.create(
             model=model_id,
             max_tokens=1400,

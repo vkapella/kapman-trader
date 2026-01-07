@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 from core.providers.ai.prompt_builder import build_prompt
 
 
@@ -20,40 +18,47 @@ def _extract_injected_payload(prompt_text: str) -> dict:
     return json.loads(payload_text)
 
 
-def test_prompt_includes_option_chain_snapshot_verbatim() -> None:
-    option_chain_snapshot = [
-        {"expiration": "2026-01-17", "strike": 150, "type": "CALL"},
-        {"expiration": "2026-01-17", "strike": 145, "type": "PUT"},
-    ]
-    option_selection_constraints = {"min_open_interest": 500, "max_spread": 0.15}
+def test_prompt_includes_context_payload_verbatim() -> None:
+    snapshot_payload = {
+        "symbol": "AAPL",
+        "snapshot_time": "2026-01-10T00:00:00Z",
+        "daily_snapshot": {
+            "wyckoff_regime": "MARKUP",
+            "wyckoff_regime_confidence": 0.7,
+            "wyckoff_regime_set_by_event": "SOS",
+            "events_json": {"events": ["SOS"]},
+            "bc_score": 10,
+            "spring_score": 4,
+            "composite_score": 12.5,
+            "technical_indicators_json": {"adx": 25},
+            "dealer_metrics_json": {"gamma_flip": 150.0},
+            "volatility_metrics_json": {"iv_rank": 55},
+            "price_metrics_json": {"close": 185.5},
+        },
+        "wyckoff_regime_transitions": [],
+        "wyckoff_sequences": [],
+        "wyckoff_sequence_events": [],
+        "wyckoff_snapshot_evidence": [],
+    }
     prompt_text = build_prompt(
-        snapshot_payload={
-            "symbol": "AAPL",
-            "snapshot_time": "2026-01-10T00:00:00Z",
-            "market_structure": {"wyckoff_regime": "MARKUP", "regime_confidence": 0.7},
-        },
-        option_context={
-            "option_chain_snapshot": option_chain_snapshot,
-            "option_selection_constraints": option_selection_constraints,
-        },
+        snapshot_payload=snapshot_payload,
+        option_context={},
         authority_constraints={},
         instructions={},
         prompt_version="test",
     )
 
     payload = _extract_injected_payload(prompt_text)
-    assert payload["option_chain_snapshot"] == option_chain_snapshot
-    assert payload["option_selection_constraints"] == option_selection_constraints
-    assert isinstance(payload["option_chain_hash"], str)
-    assert len(payload["option_chain_hash"]) == 64
+    assert payload == snapshot_payload
 
 
-def test_prompt_missing_option_chain_snapshot_fails() -> None:
-    with pytest.raises(ValueError, match="option_chain_snapshot_missing"):
-        build_prompt(
-            snapshot_payload={"symbol": "AAPL", "snapshot_time": "2026-01-10T00:00:00Z"},
-            option_context={},
-            authority_constraints={},
-            instructions={},
-            prompt_version="test",
-        )
+def test_prompt_allows_minimal_payload() -> None:
+    prompt_text = build_prompt(
+        snapshot_payload={"symbol": "AAPL", "snapshot_time": "2026-01-10T00:00:00Z"},
+        option_context={},
+        authority_constraints={},
+        instructions={},
+        prompt_version="test",
+    )
+    payload = _extract_injected_payload(prompt_text)
+    assert payload["symbol"] == "AAPL"

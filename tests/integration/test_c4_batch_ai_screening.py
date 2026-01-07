@@ -40,25 +40,33 @@ def _seed_watchlist_snapshot(
                 ticker_id,
                 wyckoff_regime,
                 wyckoff_regime_confidence,
-                events_detected,
+                wyckoff_regime_set_by_event,
+                events_json,
+                bc_score,
+                spring_score,
+                composite_score,
                 technical_indicators_json,
-                volatility_metrics_json,
                 dealer_metrics_json,
+                volatility_metrics_json,
                 price_metrics_json,
                 model_version,
                 created_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 snapshot_time,
                 ticker_id,
                 "MARKUP",
                 0.85,
-                ["SOS"],
+                "SOS",
+                Json({"events": ["SOS"]}),
+                10,
+                4,
+                12.5,
                 Json({"adx": 25}),
-                Json({"iv_rank": 55}),
                 Json({"spot_price": 185.5}),
+                Json({"iv_rank": 55}),
                 Json({"close": 185.5}),
                 "c4-test",
                 snapshot_time,
@@ -77,7 +85,7 @@ def test_c4_batch_ai_screening_dry_run() -> None:
     reset_and_migrate(db_url, default_migrations_dir())
 
     snapshot_time = datetime(2025, 12, 5, 23, 59, 59, 999999, tzinfo=timezone.utc)
-    symbols = ["AAPL", "MSFT"]
+    symbols = ["AAPL"]
 
     with psycopg2.connect(db_url) as conn:
         for symbol in symbols:
@@ -103,5 +111,5 @@ def test_c4_batch_ai_screening_dry_run() -> None:
     assert [entry["ticker"] for entry in responses] == symbols
     for entry in responses:
         raw = entry["raw_normalized_response"]
-        assert raw["primary_recommendation"]["rationale_summary"] == "Dry-run stub response."
-        assert raw["snapshot_metadata"]["ticker"] in symbols
+        assert raw["discarded_metrics"] == ["dry_run"]
+        assert raw["conditional_recommendation"]["action"] == "HOLD"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -14,6 +15,10 @@ from core.metrics import c4_batch_ai_screening_job as c4_module
 
 def _test_db_url() -> str | None:
     return os.getenv("KAPMAN_TEST_DATABASE_URL")
+
+
+def _canonical_json(value: dict) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 
 
 def _seed_watchlist_snapshot(
@@ -40,25 +45,33 @@ def _seed_watchlist_snapshot(
                 ticker_id,
                 wyckoff_regime,
                 wyckoff_regime_confidence,
-                events_detected,
+                wyckoff_regime_set_by_event,
+                events_json,
+                bc_score,
+                spring_score,
+                composite_score,
                 technical_indicators_json,
-                volatility_metrics_json,
                 dealer_metrics_json,
+                volatility_metrics_json,
                 price_metrics_json,
                 model_version,
                 created_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 snapshot_time,
                 ticker_id,
                 "MARKUP",
                 0.85,
-                ["SOS"],
+                "SOS",
+                Json({"events": ["SOS"]}),
+                10,
+                4,
+                12.5,
                 Json({"adx": 25}),
-                Json({"iv_rank": 55}),
                 Json({"spot_price": 185.5}),
+                Json({"iv_rank": 55}),
                 Json({"close": 185.5}),
                 "c4-test",
                 snapshot_time,
@@ -69,43 +82,21 @@ def _seed_watchlist_snapshot(
 
 def _fake_response(symbol: str, snapshot_time: datetime) -> dict:
     return {
-        "snapshot_metadata": {
-            "ticker": symbol,
-            "snapshot_time": snapshot_time.isoformat(),
-            "model_version": "c4-test",
-            "wyckoff_regime": "MARKUP",
-            "wyckoff_primary_event": "SOS",
-            "data_completeness_flags": {},
-            "ai_provider": "anthropic",
-            "ai_model": "test-model",
-            "ai_model_version": None,
-            "kapman_model_version": "c4-test",
+        "context_label": "MARKUP",
+        "confidence_score": 0.75,
+        "metric_assessment": {
+            "supporting": ["wyckoff_regime", "bc_score"],
+            "contradicting": [],
+            "neutral": ["volatility_metrics_json"],
         },
-        "primary_recommendation": {
-            "action": "ENTER",
-            "strategy_class": "LONG_CALL",
-            "direction": "BULLISH",
-            "confidence_score": 85,
-            "time_horizon": "short",
-            "rationale_summary": "Test rationale.",
-            "option_strike": 150,
-            "option_expiration": "2026-01-17",
-            "option_type": "C",
+        "metric_weights": {"wyckoff_regime": 0.5, "bc_score": 0.2, "volatility_metrics_json": 0.1},
+        "discarded_metrics": [],
+        "conditional_recommendation": {
+            "direction": "LONG",
+            "action": "PROCEED",
+            "option_type": None,
+            "option_strategy": None,
         },
-        "alternative_recommendations": [],
-        "reasoning_trace": {
-            "fired_rules": [],
-            "cluster_contributions": [{"cluster": "Meta", "impact": "TEST"}],
-            "supporting_factors": [],
-            "blocking_factors": [],
-        },
-        "confidence_summary": {
-            "confidence_type": "RELATIVE",
-            "ranking_basis": "Primary outranks alternatives by construction",
-            "confidence_gap_notes": None,
-        },
-        "missing_data_declaration": [],
-        "guardrails_and_disclaimers": ["Guardrail"],
     }
 
 
@@ -169,4 +160,4 @@ def test_c2_persist_recommendations_end_to_end(monkeypatch: pytest.MonkeyPatch) 
 
     assert count1 == 1
     assert count2 == 1
-    assert justification == "Test rationale."
+    assert justification == _canonical_json(_fake_response(symbol, snapshot_time))
