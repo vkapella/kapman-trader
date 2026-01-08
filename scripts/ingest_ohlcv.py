@@ -198,7 +198,10 @@ def build_parser() -> ArgumentParser:
         sp.add_argument(
             "--strict-missing-symbols",
             action="store_true",
-            help="Fail if flatfile contains symbols missing from tickers (default: base load skips missing symbols)",
+            help=(
+                "Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. "
+                "By default, all modes skip unknown symbols (recommended for curated universes)."
+            ),
         )
         sp.add_argument(
             "--no-ticker-bootstrap",
@@ -221,13 +224,13 @@ def build_parser() -> ArgumentParser:
         help="Latest date to consider (default: yesterday)",
     )
 
-    inc = sub.add_parser("incremental", help="Incremental daily ingestion")
+    inc = sub.add_parser("incremental", help="Incremental daily ingestion (skips unknown symbols by default)")
     add_common_flags(inc)
     inc.add_argument("--date", type=_parse_date, default=None, help="Single date (YYYY-MM-DD)")
     inc.add_argument("--start", type=_parse_date, default=None, help="Start date (YYYY-MM-DD)")
     inc.add_argument("--end", type=_parse_date, default=None, help="End date (YYYY-MM-DD)")
 
-    backfill = sub.add_parser("backfill", help="Bounded historical backfill")
+    backfill = sub.add_parser("backfill", help="Bounded historical backfill (skips unknown symbols by default)")
     add_common_flags(backfill)
     backfill.add_argument("--start", type=_parse_date, required=True, help="Start date (YYYY-MM-DD)")
     backfill.add_argument("--end", type=_parse_date, required=True, help="End date (YYYY-MM-DD)")
@@ -353,7 +356,8 @@ def main(argv: list[str]) -> int:
     else:
         raise SystemExit(f"Unknown mode: {args.mode!r}")
 
-    strict_missing_symbols = bool(args.strict_missing_symbols or args.mode != "base")
+    # Strict missing symbol enforcement is opt-in only.
+    strict_missing_symbols = bool(args.strict_missing_symbols)
     if verbosity != "quiet":
         if dates:
             print(
