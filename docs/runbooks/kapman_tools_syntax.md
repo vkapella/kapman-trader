@@ -80,43 +80,71 @@ python -m scripts.ingest_ohlcv base --days 1 --as-of <yesterdays date> #loads 1 
 
 usage: ingest_ohlcv.py [-h] [--db-url DB_URL] {base,incremental,backfill} ...
 
+Canonical OHLCV ingestion pipeline (A0). Reads Polygon S3 flat files and upserts into public.ohlcv.
 
 positional arguments:
   {base,incremental,backfill}
-    base                # Full-universe base load ( OHLCV_HISTORY_DAYS or 730)
-    incremental         # Incremental daily ingestion (--date, --start, --end)
-    backfill            # Bounded historical backfill (--start, --end)
+    base                Full-universe base load (last N available trading days)
+    incremental         Incremental daily ingestion (skips unknown symbols by default)
+    backfill            Bounded historical backfill (skips unknown symbols by default)
 
 optional arguments:
-  -h, --help            # show this help message and exit
-  --db-url DB_URL       # Overrides DATABASE_URL (default: env DATABASE_URL)
+  -h, --help            show this help message and exit
+  --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
 
 * base *
-base option arguments:
-  -h, --help            # show this help message and exit
-  --db-url DB_URL                      # Overrides DATABASE_URL (default: env DATABASE_URL)
-  --verbosity {quiet,normal,debug}     # Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
-  --max-symbol-sample MAX_SYMBOL_SAMPLE #Max symbols to show when samples are printed (debug only; default: 10)
-  --symbols SYMBOLS                  #Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
-  --strict-missing-symbols           #Fail if flatfile contains symbols missing from tickers (default: base load skips missing symbols)
-  --no-ticker-bootstrap              #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
-  --days DAYS                        #Number of available daily files to ingest (default: OHLCV_HISTORY_DAYS or 730)
-  --as-of AS_OF                      #Latest date to consider (default: yesterday)
-
-* backfill *
-
-usage: ingest_ohlcv.py backfill [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] [--no-ticker-bootstrap] --start START --end END
+usage: ingest_ohlcv.py base [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] [--no-ticker-bootstrap] [--days DAYS] [--as-of AS_OF]
 
 optional arguments:
-  -h, --help                              # show this help message and exit
-  --db-url DB_URL                         # Overrides DATABASE_URL (default: env DATABASE_URL)
-  --verbosity {quiet,normal,debug}        # Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
-  --max-symbol-sample MAX_SYMBOL_SAMPLE   #Max symbols to show when samples are printed (debug only; default: 10)
-  --symbols SYMBOLS                       #Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
-  --strict-missing-symbols                #Fail if flatfile contains symbols missing from tickers (default: base load skips missing symbols)
-  --no-ticker-bootstrap                   #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
-  --start START                           # Start date (YYYY-MM-DD)
-  --end END                               # End date (YYYY-MM-DD)
+  -h, --help            show this help message and exit
+  --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
+  --verbosity {quiet,normal,debug} #Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
+  --max-symbol-sample MAX_SYMBOL_SAMPLE #Max symbols to show when samples are printed (debug only; default: 10)
+  --symbols SYMBOLS     Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
+  --strict-missing-symbols Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
+  --no-ticker-bootstrapDisable automatic ticker bootstrapping; if tickers is empty, fail as-is
+  --days DAYS           Number of available daily files to ingest (default: OHLCV_HISTORY_DAYS or 730)
+  --as-of AS_OF         Latest date to consider (default: yesterday)
+* backfill *
+
+usage: ingest_ohlcv.py backfill [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] [--no-ticker-bootstrap]
+                                --start START --end END
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
+  --verbosity {quiet,normal,debug}
+                        Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
+  --max-symbol-sample MAX_SYMBOL_SAMPLE
+                        Max symbols to show when samples are printed (debug only; default: 10)
+  --symbols SYMBOLS     Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
+  --strict-missing-symbols
+                        Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
+  --no-ticker-bootstrap
+                        Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
+  --start START         Start date (YYYY-MM-DD)
+  --end END             End date (YYYY-MM-DD)
+
+* incremental *
+usage: ingest_ohlcv.py incremental [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols]
+                                   [--no-ticker-bootstrap] [--date DATE] [--start START] [--end END]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
+  --verbosity {quiet,normal,debug}
+                        Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
+  --max-symbol-sample MAX_SYMBOL_SAMPLE
+                        Max symbols to show when samples are printed (debug only; default: 10)
+  --symbols SYMBOLS     Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
+  --strict-missing-symbols
+                        Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
+  --no-ticker-bootstrap
+                        Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
+  --date DATE           Single date (YYYY-MM-DD)
+  --start START         Start date (YYYY-MM-DD)
+  --end END             End date (YYYY-MM-DD)
+(venv) vkapella@Mac-Studio kapman-trader %   
 
 ## Ingest OHLCV Dashboard
 
