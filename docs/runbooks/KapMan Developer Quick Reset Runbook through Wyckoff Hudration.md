@@ -38,9 +38,11 @@ echo $POLYGON_API_KEY
 *  Step 0 — Stop and Destroy the Database (Pave)
 This removes all persisted state, including schema and data.
 
-docker compose stop db
-docker compose rm -f db
-docker volume rm kapman-trader_pgdata
+docker compose down -v --remove-orphans
+
+#docker compose stop db
+#docker compose rm -f db
+#docker volume rm kapman-trader_pgdata
 
 ⸻
 
@@ -230,7 +232,7 @@ docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT MIN(date) AS min_d
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT hypertable_schema, hypertable_name, num_chunks, compression_enabled FROM timescaledb_information.hypertables WHERE hypertable_schema='public' AND hypertable_name='ohlcv';"
 
 **run the ohlcv dashboard to verify**
-docker exec -i kapman-db psql -U kapman -d kapman -v ON_ERROR_STOP=1 -v DAYS_BACK=30 -v SYMBOL_LIMIT=25 < docs/runbooks/0000-A0-ohlcv_dashboard.sql
+docker exec -i kapman-db psql -U kapman -d kapman -v ON_ERROR_STOP=1 -v DAYS_BACK=30 -v SYMBOL_LIMIT=25 < db/dashboards/0000-A0-ohlcv_dashboard.sql
 
 
 
@@ -241,10 +243,11 @@ docker exec -i kapman-db psql -U kapman -d kapman -v ON_ERROR_STOP=1 -v DAYS_BAC
 This ingests option snapshots for all active watchlist symbols into public.options_chains.
 
 python -m scripts.ingest_options
+% python -m scripts.ingest_options --start-date 2025-11-01 --end-date 2026-01-06 --concurrency 5 --heartbeat 25 --emit-summary
 
 **run the options dashboard to verify**
 
-docker exec -i kapman-db psql -U kapman -d kapman -v  ON_ERROR_STOP=1 <docs/runbooks/0001-A1-options_chains_dashboard.sql
+docker exec -i kapman-db psql -U kapman -d kapman -v  ON_ERROR_STOP=1 <db/dashboards/0001-A1-options_chains_dashboard.sql
 
 **run the options dashboard to verify**
 

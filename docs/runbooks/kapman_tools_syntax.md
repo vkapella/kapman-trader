@@ -107,40 +107,31 @@ optional arguments:
   --as-of AS_OF         Latest date to consider (default: yesterday)
 * backfill *
 
-usage: ingest_ohlcv.py backfill [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] [--no-ticker-bootstrap]
-                                --start START --end END
+usage: ingest_ohlcv.py backfill [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] [--no-ticker-bootstrap] --start START --end END
 
 optional arguments:
   -h, --help            show this help message and exit
   --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
-  --verbosity {quiet,normal,debug}
-                        Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
-  --max-symbol-sample MAX_SYMBOL_SAMPLE
-                        Max symbols to show when samples are printed (debug only; default: 10)
+  --verbosity {quiet,normal,debug} #Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
+  --max-symbol-sample MAX_SYMBOL_SAMPLE #Max symbols to show when samples are printed (debug only; default: 10)
   --symbols SYMBOLS     Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
-  --strict-missing-symbols
-                        Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
-  --no-ticker-bootstrap
-                        Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
+  --strict-missing-symbols #Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
+  --no-ticker-bootstrap #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
   --start START         Start date (YYYY-MM-DD)
   --end END             End date (YYYY-MM-DD)
 
 * incremental *
 usage: ingest_ohlcv.py incremental [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols]
-                                   [--no-ticker-bootstrap] [--date DATE] [--start START] [--end END]
+[--no-ticker-bootstrap] [--date DATE] [--start START] [--end END]
 
 optional arguments:
   -h, --help            show this help message and exit
   --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
-  --verbosity {quiet,normal,debug}
-                        Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
-  --max-symbol-sample MAX_SYMBOL_SAMPLE
-                        Max symbols to show when samples are printed (debug only; default: 10)
+  --verbosity {quiet,normal,debug} #Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
+  --max-symbol-sample MAX_SYMBOL_SAMPLE #Max symbols to show when samples are printed (debug only; default: 10)
   --symbols SYMBOLS     Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
-  --strict-missing-symbols
-                        Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
-  --no-ticker-bootstrap
-                        Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
+  --strict-missing-symbols #Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
+  --no-ticker-bootstrap #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
   --date DATE           Single date (YYYY-MM-DD)
   --start START         Start date (YYYY-MM-DD)
   --end END             End date (YYYY-MM-DD)
@@ -264,12 +255,20 @@ optional arguments:
 
 ## Compute Wyckoff Structural Events
 
-KapMan B2: Compute Wyckoff events into daily_snapshots
+KapMan B2r2: Persist canonical Wyckoff structural events into daily_snapshots
 
 usage: run_b2_wyckoff_structural_events.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat]  
 
 python -m scripts.run_b2_wyckoff_structural_events --heartbeat  
 
+optional arguments:
+  -h, --help            show this help message and exit
+  --watchlist           Restrict to active watchlist symbols
+  --symbols SYMBOLS     Comma-separated symbols (e.g., AAPL,MSFT)
+  --start-date START_DATEStart date (YYYY-MM-DD)
+  --end-date END_DATE   End date (YYYY-MM-DD)
+  --verbose             Enable step-level logging
+  --heartbeat           Emit periodic progress logs
 
 ## ComputeWyckoff Structural Events Dashboard
 
