@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from core.providers.ai.claude import ClaudeProvider
 from core.providers.ai.openai import OpenAIProvider
+from core.providers.ai.payload_normalization import normalize_payload
 from core.providers.ai.prompt_builder import build_prompt
 from core.providers.ai.response_parser import normalize_agent_response
 
@@ -107,21 +108,32 @@ def invoke_planning_agent(
         instructions=instructions,
         prompt_version=prompt_version,
     )
-    request_payload_json = _canonical_json(request_payload)
+    try:
+        normalized_payload = normalize_payload(request_payload)
+    except Exception as exc:
+        raise RuntimeError(f"Payload normalization failed: {type(exc).__name__}: {exc}") from exc
+
+    request_payload_json = _canonical_json(normalized_payload)
     invocation_id = _invocation_id(request_payload_json, provider_key, model_id)
+    normalized_snapshot = normalized_payload.get("snapshot_payload") if isinstance(normalized_payload, dict) else {}
+    normalized_option_context = normalized_payload.get("option_context") if isinstance(normalized_payload, dict) else {}
+    normalized_constraints = (
+        normalized_payload.get("authority_constraints") if isinstance(normalized_payload, dict) else {}
+    )
+    normalized_instructions = normalized_payload.get("instructions") if isinstance(normalized_payload, dict) else {}
     prompt_text = build_prompt(
-        snapshot_payload=snapshot_payload,
-        option_context=option_context,
-        authority_constraints=authority_constraints,
-        instructions=instructions,
+        snapshot_payload=normalized_snapshot,
+        option_context=normalized_option_context,
+        authority_constraints=normalized_constraints,
+        instructions=normalized_instructions,
         prompt_version=prompt_version,
     )
 
     if debug:
-        _log_event(invocation_id, "snapshot_payload", {"snapshot_payload": snapshot_payload})
-        _log_event(invocation_id, "option_context", {"option_context": option_context})
-        _log_event(invocation_id, "authority_constraints", {"authority_constraints": authority_constraints})
-        _log_event(invocation_id, "request_payload", {"request_payload": request_payload})
+        _log_event(invocation_id, "snapshot_payload", {"snapshot_payload": normalized_snapshot})
+        _log_event(invocation_id, "option_context", {"option_context": normalized_option_context})
+        _log_event(invocation_id, "authority_constraints", {"authority_constraints": normalized_constraints})
+        _log_event(invocation_id, "request_payload", {"request_payload": normalized_payload})
         _log_event(invocation_id, "prompt_text", {"prompt_text": prompt_text})
         _log_event(invocation_id, "provider_selection", {"provider_id": provider_key, "model_id": model_id})
 
@@ -131,7 +143,7 @@ def invoke_planning_agent(
         raise ValueError("Missing model_id")
 
     if dry_run:
-        normalized = _build_stub_response(snapshot_payload=snapshot_payload)
+        normalized = _build_stub_response(snapshot_payload=normalized_snapshot)
         if debug:
             _log_event(invocation_id, "normalized_response", {"normalized_response": normalized})
         return normalized

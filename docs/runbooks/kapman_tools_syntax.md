@@ -47,7 +47,7 @@ optional arguments:
 
 ## Ingest Tickers Dashboard
 
-ocker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0002-A1.1-tickers_and_watchlists_dashboard.sql
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0002-A1.1-tickers_and_watchlists_dashboard.sql
 
 ---
 
@@ -341,6 +341,7 @@ optional arguments:
 KapMan C4: Batch AI screening execution
 
 python -m scripts.run_c4_batch_ai_screening --help  
+python -m scripts.run_c4_batch_ai_screening --provider openai --model gpt-5 --dry-run --llm-trace full --llm-trace-dir data/llm --symbols aapl
 
 Usage: run_c4_batch_ai_screening.py [-h] [--db-url DB_URL] [--snapshot-time SNAPSHOT_TIME] --provider {anthropic,openai} --model MODEL [--batch-size BATCH_SIZE]
 [--batch-wait-seconds BATCH_WAIT_SECONDS] [--max-retries MAX_RETRIES] [--backoff-base-seconds BACKOFF_BASE_SECONDS] [--dry-run]  [--log-level {DEBUG,INFO,WARNING,ERROR}] [--symbols SYMBOLS] [--llm-trace {off,summary,full}] [--llm-trace-dir LLM_TRACE_DIR]

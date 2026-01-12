@@ -10,6 +10,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from core.providers.ai.payload_normalization import normalize_payload
+
 _SUMMARY_MODES = {"summary", "full"}
 _FULL_MODES = {"full"}
 _PERSISTENCE_COLUMNS = [
@@ -79,8 +81,42 @@ class LLMTraceWriter:
     def write_prompt(self, symbol: str, provider_id: str, prompt_text: str) -> None:
         self._write_text(symbol, provider_id, "01", "prompt.md", prompt_text, _SUMMARY_MODES)
 
-    def write_payload(self, symbol: str, provider_id: str, payload: Any) -> None:
-        self._write_json(symbol, provider_id, "02", "payload.json", payload, _SUMMARY_MODES)
+    def write_payload_raw(self, symbol: str, provider_id: str, payload: Any) -> None:
+        self._write_json(
+            symbol,
+            provider_id,
+            "02",
+            "payload_raw.json",
+            payload,
+            _SUMMARY_MODES,
+            best_effort=True,
+        )
+
+    def write_payload_normalized(self, symbol: str, provider_id: str, payload: Any) -> None:
+        self._write_json(
+            symbol,
+            provider_id,
+            "02b",
+            "payload_normalized.json",
+            payload,
+            _SUMMARY_MODES,
+            best_effort=True,
+        )
+
+    def write_payload_normalization_error(self, symbol: str, provider_id: str, exc: Exception) -> None:
+        payload = {
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+        }
+        self._write_json(
+            symbol,
+            provider_id,
+            "02b",
+            "payload_normalization_error.json",
+            payload,
+            _SUMMARY_MODES,
+            best_effort=True,
+        )
 
     def write_raw_response(self, symbol: str, provider_id: str, raw_response: Any) -> None:
         if isinstance(raw_response, (bytes, bytearray)):
@@ -90,7 +126,15 @@ class LLMTraceWriter:
                 raw_response = json.loads(raw_response)
             except Exception:
                 pass
-        self._write_json(symbol, provider_id, "03", "raw_response.json", raw_response, _SUMMARY_MODES)
+        self._write_json(
+            symbol,
+            provider_id,
+            "03",
+            "raw_response.json",
+            raw_response,
+            _SUMMARY_MODES,
+            best_effort=True,
+        )
 
     def write_extracted_text(self, symbol: str, provider_id: str, text: str) -> None:
         self._write_text(symbol, provider_id, "04", "extracted_text.txt", text, _FULL_MODES)
@@ -103,6 +147,7 @@ class LLMTraceWriter:
             "parsed_recommendation.json",
             recommendation,
             _SUMMARY_MODES,
+            best_effort=True,
         )
 
     def write_persistence_payload(self, symbol: str, provider_id: str, payload: Any) -> None:
@@ -113,6 +158,23 @@ class LLMTraceWriter:
             "persistence_payload.json",
             payload,
             _FULL_MODES,
+            best_effort=True,
+        )
+
+    def write_ticker_failure(self, symbol: str, provider_id: str, failure_stage: str, exc: Exception) -> None:
+        payload = {
+            "failure_stage": failure_stage,
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+        }
+        self._write_json(
+            symbol,
+            provider_id,
+            "99",
+            "ticker_failure.json",
+            payload,
+            _SUMMARY_MODES,
+            best_effort=True,
         )
 
     def _write_text(
@@ -139,6 +201,8 @@ class LLMTraceWriter:
         name: str,
         payload: Any,
         modes: set[str],
+        *,
+        best_effort: bool,
     ) -> None:
         if not self._config.mode or self._config.mode not in modes:
             return
@@ -152,7 +216,17 @@ class LLMTraceWriter:
                 default=self._json_default,
             )
         except Exception:
-            return
+            if not best_effort:
+                return
+            try:
+                rendered = json.dumps(
+                    {"unserializable_payload": str(payload)},
+                    sort_keys=True,
+                    indent=2,
+                    ensure_ascii=True,
+                )
+            except Exception:
+                return
         self._write_file(path, f"{rendered}\n")
 
     def _write_file(self, path: Path, content: str) -> None:
@@ -283,6 +357,15 @@ class TraceHooks:
                     debug=debug,
                     dry_run=dry_run,
                 )
+            except Exception as exc:
+                if writer:
+                    writer.write_ticker_failure(
+                        symbol,
+                        provider_key,
+                        self._failure_stage_from_exception(exc),
+                        exc,
+                    )
+                raise
             finally:
                 if writer:
                     writer.pop_context()
@@ -336,7 +419,21 @@ class TraceHooks:
             if writer:
                 context = writer.current_context()
                 if context:
-                    writer.write_payload(context.symbol, context.provider_id, payload)
+                    writer.write_payload_raw(context.symbol, context.provider_id, payload)
+                    try:
+                        normalized_payload = normalize_payload(payload)
+                    except Exception as exc:
+                        error = RuntimeError(f"Payload normalization failed: {type(exc).__name__}: {exc}")
+                        writer.write_payload_normalization_error(context.symbol, context.provider_id, exc)
+                        writer.write_ticker_failure(
+                            context.symbol,
+                            context.provider_id,
+                            "payload_normalization",
+                            exc,
+                        )
+                        raise error from exc
+                    else:
+                        writer.write_payload_normalized(context.symbol, context.provider_id, normalized_payload)
             return payload
 
         return wrapper
@@ -414,6 +511,16 @@ class TraceHooks:
             return row
 
         return wrapper
+
+    def _failure_stage_from_exception(self, exc: Exception) -> str:
+        message = str(exc)
+        if "Payload normalization failed" in message:
+            return "payload_normalization"
+        if "Provider invocation failed" in message:
+            return "provider_invocation"
+        if "Unknown provider" in message or "Missing model_id" in message:
+            return "config_error"
+        return "invoke_planning_agent"
 
 
 def _symbol_from_payload(snapshot_payload: dict) -> str:

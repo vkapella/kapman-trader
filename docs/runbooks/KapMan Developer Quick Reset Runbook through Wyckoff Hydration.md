@@ -486,6 +486,30 @@ docker exec -i kapman-db psql -U kapman -d kapman -v SNAPSHOT_N=1 < db/dashboard
 python -m scripts.run_b1_wyckoff_regime --heartbeat 
 
 
+* Step 11 - Enable Metbase for Queries
+
+-- Create read-only role
+CREATE ROLE metabase_ro
+  LOGIN
+  PASSWORD 'Met@bAse!23'
+  NOSUPERUSER
+  NOCREATEDB
+  NOCREATEROLE
+  NOINHERIT;
+
+GRANT CONNECT ON DATABASE kapman TO metabase_ro;
+GRANT USAGE ON SCHEMA public TO metabase_ro;
+
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO metabase_ro;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+GRANT SELECT ON TABLES TO metabase_ro;
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO metabase_ro;
+
+docker network connect kapman-trader_kapman-network kapman-metabase
+docker restart kapman-metabase
+
 Echo "----------------------------------------------------------------------------"
 Echo "1. Connect to the database interactively using psql"
 Echo "----------------------------------------------------------------------------"
