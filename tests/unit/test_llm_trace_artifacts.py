@@ -20,7 +20,8 @@ def test_trace_off_creates_no_artifacts(tmp_path: Path) -> None:
     writer = module.LLMTraceWriter(config)
 
     writer.write_prompt("AAPL", "openai", "prompt")
-    writer.write_payload("AAPL", "openai", {"b": 2, "a": 1})
+    writer.write_payload_raw("AAPL", "openai", {"b": 2, "a": 1})
+    writer.write_payload_normalized("AAPL", "openai", {"b": 2, "a": 1})
     writer.write_raw_response("AAPL", "openai", {"ok": True})
     writer.write_extracted_text("AAPL", "openai", "extracted")
     writer.write_parsed_recommendation("AAPL", "openai", {"rec": True})
@@ -35,7 +36,8 @@ def test_trace_summary_artifacts(tmp_path: Path) -> None:
     writer = module.LLMTraceWriter(config)
 
     writer.write_prompt("AAPL", "openai", "prompt")
-    writer.write_payload("AAPL", "openai", {"b": 2, "a": 1})
+    writer.write_payload_raw("AAPL", "openai", {"b": 2, "a": 1})
+    writer.write_payload_normalized("AAPL", "openai", {"b": 2, "a": 1})
     writer.write_raw_response("AAPL", "openai", {"ok": True})
     writer.write_extracted_text("AAPL", "openai", "extracted")
     writer.write_parsed_recommendation("AAPL", "openai", {"rec": True})
@@ -45,7 +47,8 @@ def test_trace_summary_artifacts(tmp_path: Path) -> None:
     artifacts = {path.name for path in target_dir.iterdir()}
     assert artifacts == {
         "01_openai_prompt.md",
-        "02_openai_payload.json",
+        "02_openai_payload_raw.json",
+        "02b_openai_payload_normalized.json",
         "03_openai_raw_response.json",
         "05_openai_parsed_recommendation.json",
     }
@@ -57,7 +60,8 @@ def test_trace_full_artifacts(tmp_path: Path) -> None:
     writer = module.LLMTraceWriter(config)
 
     writer.write_prompt("AAPL", "openai", "prompt")
-    writer.write_payload("AAPL", "openai", {"b": 2, "a": 1})
+    writer.write_payload_raw("AAPL", "openai", {"b": 2, "a": 1})
+    writer.write_payload_normalized("AAPL", "openai", {"b": 2, "a": 1})
     writer.write_raw_response("AAPL", "openai", {"ok": True})
     writer.write_extracted_text("AAPL", "openai", "extracted")
     writer.write_parsed_recommendation("AAPL", "openai", {"rec": True})
@@ -67,7 +71,8 @@ def test_trace_full_artifacts(tmp_path: Path) -> None:
     artifacts = {path.name for path in target_dir.iterdir()}
     assert artifacts == {
         "01_openai_prompt.md",
-        "02_openai_payload.json",
+        "02_openai_payload_raw.json",
+        "02b_openai_payload_normalized.json",
         "03_openai_raw_response.json",
         "04_openai_extracted_text.txt",
         "05_openai_parsed_recommendation.json",
@@ -99,9 +104,9 @@ def test_pretty_printed_json(tmp_path: Path) -> None:
     writer = module.LLMTraceWriter(config)
 
     payload = {"b": 2, "a": 1}
-    writer.write_payload("AAPL", "openai", payload)
+    writer.write_payload_raw("AAPL", "openai", payload)
 
-    target_path = tmp_path / "run-json" / "AAPL" / "02_openai_payload.json"
+    target_path = tmp_path / "run-json" / "AAPL" / "02_openai_payload_raw.json"
     expected = json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
     assert target_path.read_text(encoding="utf-8") == expected
 
@@ -114,4 +119,4 @@ def test_trace_io_failure_is_swallowed(tmp_path: Path) -> None:
     writer = module.LLMTraceWriter(config)
 
     writer.write_prompt("AAPL", "openai", "prompt")
-    writer.write_payload("AAPL", "openai", {"ok": True})
+    writer.write_payload_raw("AAPL", "openai", {"ok": True})
