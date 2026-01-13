@@ -424,3 +424,29 @@ optional arguments:
   --model MODEL
   --debug
   --dry-run
+
+## Chart Generation
+
+Generate OHLCV + TA chart packs (PNG + PDF) for LLM processing from persisted KapMan OHLCV data.
+
+python -m scripts.util.generate_ohlcv_ta_chart_pack --symbols AAPL --start-date 2025-11-01 --end-date 2026-01-09 --bars 60 
+
+usage: generate_ohlcv_ta_chart_pack.py [-h] (--symbols SYMBOLS | --watchlist WATCHLIST) [--start-date START_DATE] [--end-date END_DATE] [--bars BARS] [--out-dir OUT_DIR]
+                                       [--pdf-batch-size PDF_BATCH_SIZE] [--ta-metrics TA_METRICS]
+
+Generate OHLCV + TA chart packs (PNG + PDF) for LLM processing from persisted KapMan OHLCV data.
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --symbols SYMBOLS     Comma-separated symbols (e.g., AAPL,MSFT)
+  --watchlist WATCHLIST
+                        Watchlist name
+  --start-date START_DATE
+                        Start date (YYYY-MM-DD)
+  --end-date END_DATE   End date (YYYY-MM-DD)
+  --bars BARS           Bars to include (default: 90)
+  --out-dir OUT_DIR     Output directory (default: data/chart_packs/)
+  --pdf-batch-size PDF_BATCH_SIZE
+                        PNG batch size per PDF (default: 30)
+  --ta-metrics TA_METRICS
+                        Comma-separated TA metrics: MA,RSI,MACD,OBV,ADX
