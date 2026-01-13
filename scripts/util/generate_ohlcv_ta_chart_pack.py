@@ -17,17 +17,19 @@ import psycopg2
 
 from core.charting import (
     PANEL_SPECS,
-    filter_metrics,
     normalize_snapshot_payload,
     resolve_metric_series,
-    select_panels,
     series_has_values,
 )
-from core.charting.metrics_registry import MetricSpec
+from core.charting.metrics_registry import CLI_GROUP_ALIASES, METRIC_REGISTRY, MetricSpec
 from core.ingestion.ohlcv.db import default_db_url
 
-VALID_TA_METRICS = ("MA", "RSI", "MACD", "OBV", "ADX")
 MA_PERIODS = (20, 50, 200)
+ADX_GROUP_KEYS = ("ADX", "ADX_POS", "ADX_NEG")
+MA_KEYS = {metric.key for metric in METRIC_REGISTRY if metric.cli_group == "MA"}
+MA_KEYS.update(CLI_GROUP_ALIASES.get("MA", set()))
+MA_KEYS.update({"SMA14", "EMA_INDICATOR", "WMA", "KAMA"})
+BBANDS_KEYS = [metric.key for metric in METRIC_REGISTRY if metric.key.startswith("BBANDS_")]
 
 
 @dataclass(frozen=True)
@@ -65,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--ta-metrics",
         type=str,
         default=None,
-        help="Comma-separated TA metrics: MA,RSI,MACD,OBV,ADX",
+        help="Comma-separated metric keys or groups (derived from the metrics registry)",
     )
     return parser
 
@@ -88,21 +90,62 @@ def parse_symbols(value: str) -> list[str]:
     return sorted(ordered)
 
 
-def parse_ta_metrics(value: str | None) -> list[str]:
+def _registry_index() -> tuple[dict[str, MetricSpec], dict[str, list[MetricSpec]]]:
+    key_map: dict[str, MetricSpec] = {}
+    group_map: dict[str, list[MetricSpec]] = {}
+    for metric in METRIC_REGISTRY:
+        key_map[metric.key.upper()] = metric
+        group_key = metric.cli_group.upper()
+        group_map.setdefault(group_key, []).append(metric)
+
+    for alias, alias_keys in CLI_GROUP_ALIASES.items():
+        alias_key = alias.upper()
+        if alias_key in group_map:
+            continue
+        alias_metrics = [metric for metric in METRIC_REGISTRY if metric.key in alias_keys]
+        if alias_metrics:
+            group_map[alias_key] = alias_metrics
+
+    return key_map, group_map
+
+
+def parse_ta_metrics(value: str | None) -> list[MetricSpec]:
     if value is None:
         return []
-    metrics = [m.strip().upper() for m in value.split(",") if m.strip()]
-    if not metrics:
+    tokens = [m.strip().upper() for m in value.split(",") if m.strip()]
+    if not tokens:
         return []
-    invalid = [m for m in metrics if m not in VALID_TA_METRICS]
-    if invalid:
-        raise ValueError(f"Invalid --ta-metrics entries: {', '.join(invalid)}")
+    key_map, group_map = _registry_index()
+    invalid: list[str] = []
     seen = set()
-    ordered: list[str] = []
-    for metric in metrics:
-        if metric not in seen:
-            ordered.append(metric)
-            seen.add(metric)
+    ordered: list[MetricSpec] = []
+    for token in tokens:
+        if token in key_map:
+            metric = key_map[token]
+            if metric.key not in seen:
+                ordered.append(metric)
+                seen.add(metric.key)
+            continue
+        if token in group_map:
+            for metric in group_map[token]:
+                if metric.key not in seen:
+                    ordered.append(metric)
+                    seen.add(metric.key)
+            continue
+        invalid.append(token)
+
+    if invalid:
+        valid_keys = [metric.key for metric in METRIC_REGISTRY]
+        valid_groups = sorted(group_map.keys())
+        raise ValueError(
+            "Invalid --ta-metrics entries: "
+            f"{', '.join(invalid)}. "
+            "Valid metric keys: "
+            f"{', '.join(valid_keys)}. "
+            "Valid groups: "
+            f"{', '.join(valid_groups)}"
+        )
+
     return ordered
 
 
@@ -193,13 +236,17 @@ def _fetch_daily_snapshots(
     conn,
     symbol: str,
     dates: list[date],
-) -> dict[date, object]:
+) -> dict[date, dict[str, object]]:
     if not dates:
         return {}
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT ds.time::date, ds.technical_indicators_json
+            SELECT
+                ds.time::date,
+                ds.technical_indicators_json,
+                ds.dealer_metrics_json,
+                ds.volatility_metrics_json
             FROM daily_snapshots ds
             JOIN tickers t ON t.id = ds.ticker_id
             WHERE t.symbol = %s AND ds.time::date = ANY(%s)
@@ -207,14 +254,44 @@ def _fetch_daily_snapshots(
             (symbol, dates),
         )
         rows = cur.fetchall()
-    return {row[0]: row[1] for row in rows}
+    return {
+        row[0]: {
+            "technical": row[1],
+            "dealer": row[2],
+            "volatility": row[3],
+        }
+        for row in rows
+    }
+
+
+def _apply_panel_legend(ax) -> None:
+    handles, labels = ax.get_legend_handles_labels()
+    if not handles:
+        return
+    filtered: list[tuple[object, str]] = []
+    seen: set[str] = set()
+    for handle, label in zip(handles, labels):
+        if not label or label.startswith("_"):
+            continue
+        if label in seen:
+            continue
+        filtered.append((handle, label))
+        seen.add(label)
+    if filtered:
+        ax.legend(
+            [item[0] for item in filtered],
+            [item[1] for item in filtered],
+            loc="upper left",
+            fontsize=8,
+            frameon=False,
+        )
 
 
 def _render_chart(
     symbol: str,
     df: pd.DataFrame,
-    panels: list[str],
-    panel_metrics: dict[str, list[MetricSpec]],
+    price_overlays: list[MetricSpec],
+    panel_entries: list[list[MetricSpec]],
     metric_series: dict[str, pd.Series],
     output_path: Path,
 ) -> None:
@@ -237,12 +314,12 @@ def _render_chart(
 
     x = np.arange(len(df))
     dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
-    height_ratios = [3.6] + [1.4] * (len(panels) - 1)
+    height_ratios = [3.6] + [1.2] * len(panel_entries)
     fig = plt.figure(figsize=(12, sum(height_ratios) + 0.7))
-    gs = fig.add_gridspec(nrows=len(panels), ncols=1, height_ratios=height_ratios, hspace=0.18)
+    gs = fig.add_gridspec(nrows=len(height_ratios), ncols=1, height_ratios=height_ratios, hspace=0.18)
 
     axes: list[plt.Axes] = []
-    for i in range(len(panels)):
+    for i in range(len(height_ratios)):
         if i == 0:
             ax = fig.add_subplot(gs[i, 0])
         else:
@@ -273,21 +350,6 @@ def _render_chart(
             )
         )
 
-    price_metrics = panel_metrics.get("PRICE", [])
-    for metric in price_metrics:
-        series = metric_series.get(metric.key)
-        if series is not None:
-            ax_price.plot(
-                x,
-                series.values,
-                color=metric.color,
-                linewidth=metric.linewidth,
-                alpha=metric.alpha,
-                label=metric.label,
-            )
-    if ax_price.get_legend_handles_labels()[0]:
-        ax_price.legend(loc="upper left", fontsize=8, frameon=False)
-
     ax_vol = ax_price.twinx()
     max_vol = df["volume"].max() if not df["volume"].empty else 0
     if pd.isna(max_vol) or max_vol <= 0:
@@ -308,14 +370,39 @@ def _render_chart(
     ax_price.set_ylabel(PANEL_SPECS["PRICE"].ylabel)
     ax_price.margins(x=0.01)
 
+    for metric in price_overlays:
+        series = metric_series.get(metric.key)
+        if series is None or not series_has_values(series):
+            continue
+        if metric.kind == "hist":
+            mask = series.notna().to_numpy()
+            values = series.to_numpy()[mask]
+            positions = x[mask]
+            if metric.negative_color:
+                colors = [metric.color if v >= 0 else metric.negative_color for v in values]
+            else:
+                colors = metric.color
+            ax_price.bar(positions, values, color=colors, alpha=metric.alpha, label=metric.label)
+        else:
+            ax_price.plot(
+                x,
+                series.values,
+                color=metric.color,
+                linewidth=metric.linewidth,
+                alpha=metric.alpha,
+                label=metric.label,
+            )
+    _apply_panel_legend(ax_price)
+
     panel_idx = 1
-    for panel in panels[1:]:
+    for panel_metrics in panel_entries:
         ax = axes[panel_idx]
-        panel_spec = PANEL_SPECS.get(panel)
-        for metric in panel_metrics.get(panel, []):
+        has_series = False
+        for metric in panel_metrics:
             series = metric_series.get(metric.key)
-            if series is None:
+            if series is None or not series_has_values(series):
                 continue
+            has_series = True
             if metric.kind == "hist":
                 mask = series.notna().to_numpy()
                 values = series.to_numpy()[mask]
@@ -334,16 +421,12 @@ def _render_chart(
                     alpha=metric.alpha,
                     label=metric.label,
                 )
-        if panel_spec:
-            if panel_spec.y_limits:
-                ax.set_ylim(*panel_spec.y_limits)
-            if panel_spec.reference_lines:
-                for level in panel_spec.reference_lines:
-                    ax.axhline(level, color="#999999", linewidth=0.8, linestyle="--")
-            if panel_spec.ylabel:
-                ax.set_ylabel(panel_spec.ylabel)
-        if ax.get_legend_handles_labels()[0]:
-            ax.legend(loc="upper left", fontsize=8, frameon=False)
+        if not has_series:
+            panel_idx += 1
+            continue
+        if len(panel_metrics) == 1:
+            ax.set_ylabel(panel_metrics[0].label)
+        _apply_panel_legend(ax)
         panel_idx += 1
 
     for i, ax in enumerate(axes):
@@ -389,9 +472,22 @@ def main(argv: list[str]) -> int:
     bars = _ensure_positive("bars", args.bars)
     batch_size = _ensure_positive("pdf-batch-size", args.pdf_batch_size)
     try:
-        ta_metrics = parse_ta_metrics(args.ta_metrics)
+        requested_metrics = parse_ta_metrics(args.ta_metrics)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    metric_by_key = {metric.key: metric for metric in METRIC_REGISTRY}
+    expanded_metrics = list(requested_metrics)
+    requested_keys = {metric.key for metric in requested_metrics}
+    if requested_keys.intersection(ADX_GROUP_KEYS):
+        for key in ADX_GROUP_KEYS:
+            if key not in requested_keys and key in metric_by_key:
+                expanded_metrics.append(metric_by_key[key])
+                requested_keys.add(key)
+    if requested_keys.intersection(BBANDS_KEYS):
+        for key in BBANDS_KEYS:
+            if key not in requested_keys and key in metric_by_key:
+                expanded_metrics.append(metric_by_key[key])
+                requested_keys.add(key)
 
     db_url = default_db_url()
     imagemagick_cmd = _resolve_imagemagick()
@@ -422,7 +518,6 @@ def main(argv: list[str]) -> int:
             if end_date is None:
                 raise SystemExit("No OHLCV data available to determine end date")
 
-        requested_metrics = filter_metrics(ta_metrics)
         png_paths: list[Path] = []
         skipped = 0
         for idx, symbol in enumerate(symbols, start=1):
@@ -440,41 +535,78 @@ def main(argv: list[str]) -> int:
                     continue
 
                 metric_series: dict[str, pd.Series] = {}
-                if requested_metrics:
+                if expanded_metrics:
                     ohlcv_dates = df["date"].dt.date.tolist()
                     snapshots_raw = _fetch_daily_snapshots(conn, symbol, ohlcv_dates)
-                    snapshots_by_date: dict[date, object] = {}
-                    for snap_date, payload in snapshots_raw.items():
-                        snapshots_by_date[snap_date] = normalize_snapshot_payload(payload, logger=log)
+                    snapshots_by_source: dict[str, dict[date, object]] = {
+                        "technical": {},
+                        "dealer": {},
+                        "volatility": {},
+                    }
+                    for snap_date, payloads in snapshots_raw.items():
+                        for source in snapshots_by_source:
+                            payload = payloads.get(source)
+                            snapshots_by_source[source][snap_date] = normalize_snapshot_payload(
+                                payload, logger=log
+                            )
 
-                    for metric in requested_metrics:
-                        metric_series[metric.key] = resolve_metric_series(
-                            snapshots_by_date,
-                            df["date"],
-                            metric.json_path,
-                            logger=log,
-                        )
+                    for metric in expanded_metrics:
+                        source_payloads = snapshots_by_source.get(metric.source, {})
+                        try:
+                            metric_series[metric.key] = resolve_metric_series(
+                                source_payloads,
+                                df["date"],
+                                metric.json_path,
+                                logger=log,
+                            )
+                        except Exception:
+                            log.exception("Failed to resolve metric %s on %s", metric.key, symbol)
+                            metric_series[metric.key] = pd.Series(np.nan, index=df["date"])
 
-                active_metrics: list[MetricSpec] = []
-                for metric in requested_metrics:
+                metrics_with_data: set[str] = set()
+                for metric in expanded_metrics:
                     series = metric_series.get(metric.key)
                     if series is not None and series_has_values(series):
-                        active_metrics.append(metric)
+                        metrics_with_data.add(metric.key)
                     else:
                         log.warning("No persisted values for %s on %s; skipping", metric.key, symbol)
 
-                available_metric_keys = {metric.key for metric in active_metrics}
-                panels = select_panels(requested_metrics, available_metric_keys)
-                if requested_metrics and not active_metrics:
+                if expanded_metrics and not metrics_with_data:
                     log.warning("No persisted metrics resolved for %s; rendering price panel only", symbol)
-
-                panel_metrics: dict[str, list[MetricSpec]] = {}
-                for metric in active_metrics:
-                    panel_metrics.setdefault(metric.panel, []).append(metric)
 
                 png_name = f"{idx:03d}_{symbol}.png"
                 png_path = png_dir / png_name
-                _render_chart(symbol, df, panels, panel_metrics, metric_series, png_path)
+                overlay_keys = MA_KEYS.union(BBANDS_KEYS)
+                price_overlays: list[MetricSpec] = []
+                seen_overlays: set[str] = set()
+                for metric in expanded_metrics:
+                    if metric.key in overlay_keys and metric.key in metrics_with_data:
+                        if metric.key not in seen_overlays:
+                            price_overlays.append(metric)
+                            seen_overlays.add(metric.key)
+
+                panel_entries: list[list[MetricSpec]] = []
+                seen_panels: set[str] = set()
+                adx_panel_added = False
+                for metric in expanded_metrics:
+                    if metric.key in overlay_keys:
+                        continue
+                    if metric.key in ADX_GROUP_KEYS:
+                        if not adx_panel_added:
+                            adx_panel_added = True
+                            adx_metrics = [
+                                metric_by_key[key]
+                                for key in ADX_GROUP_KEYS
+                                if key in metric_by_key and key in metrics_with_data
+                            ]
+                            if adx_metrics:
+                                panel_entries.append(adx_metrics)
+                        continue
+                    if metric.key in metrics_with_data and metric.key not in seen_panels:
+                        panel_entries.append([metric])
+                        seen_panels.add(metric.key)
+
+                _render_chart(symbol, df, price_overlays, panel_entries, metric_series, png_path)
                 png_paths.append(png_path)
             except Exception:
                 log.exception("Failed to render %s; skipping", symbol)
