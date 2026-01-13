@@ -63,10 +63,22 @@ def resolve_metric_series(
                 logger.warning("Failed to resolve metric path %s", ".".join(path), exc_info=exc)
             values.append(np.nan)
             continue
+        if value is None:
+            values.append(np.nan)
+            continue
+        if isinstance(value, bool):
+            values.append(float(value))
+            continue
         if isinstance(value, (int, float)):
             values.append(float(value))
-        else:
-            values.append(np.nan)
+            continue
+        if isinstance(value, str):
+            try:
+                values.append(float(value))
+            except ValueError:
+                values.append(np.nan)
+            continue
+        values.append(np.nan)
     return pd.Series(values, index=pd.Index(date_index))
 
 
