@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-START_DATE="2026-01-07"
-END_DATE="2026-01-09"
+START_DATE="2026-01-10"
+END_DATE="2026-01-12"
 
 echo "=== A1: ensure tickers + watchlists exist (idempotent) ==="
 python -m scripts.ingest_tickers
@@ -50,8 +50,7 @@ python -m scripts.run_a4_volatility_metrics \
 
 echo "=== A3: compute dealer metrics into daily_snapshots (per-day, aligned to options snapshot_time) ==="
 for D in 2026-01-07 2026-01-08 2026-01-09; do
-  SNAPSHOT_TIME="${D}T21:00:00Z"
-
+  SNAPSHOT_TIME="${D}T21:00:00+00:00"
   python -m scripts.run_a3_dealer_metrics \
     --snapshot-time "${SNAPSHOT_TIME}" \
     --log-level INFO

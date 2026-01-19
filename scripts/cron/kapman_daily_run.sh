@@ -129,10 +129,12 @@ python -m scripts.run_a4_volatility_metrics \
   --fill-missing \
   --heartbeat 50
 
-# ----- A3: dealer metrics (aligned to options snapshot_time) -----
-echo "=== A3: run_a3_dealer_metrics snapshot-time ${SNAPSHOT_TIME_UTC} ==="
+# ----- A3: dealer metrics (WRITE TO CANONICAL EOD SNAPSHOT ROW) -----
+EOD_SNAPSHOT_TIME_UTC="${YDAY_ET}T23:59:59.999999+00:00"
+
+echo "=== A3: run_a3_dealer_metrics snapshot-time ${EOD_SNAPSHOT_TIME_UTC} (canonical EOD) ==="
 python -m scripts.run_a3_dealer_metrics \
-  --snapshot-time "${SNAPSHOT_TIME_UTC}" \
+  --snapshot-time "${EOD_SNAPSHOT_TIME_UTC}" \
   --log-level INFO
 
 # ----- B2: wyckoff structural events (yesterday only) -----
