@@ -159,6 +159,20 @@ def normalize_agent_response(
         logger.error("ai_parse_failure", extra={"reason": error_reason})
         raise ValueError(error_reason)
     assert candidate is not None
+    metric_weights = candidate.get("metric_weights")
+    if isinstance(metric_weights, list):
+        normalized_weights: Dict[str, float] = {}
+        for item in metric_weights:
+            if not isinstance(item, dict):
+                continue
+            metric = item.get("metric")
+            weight = item.get("weight")
+            if not isinstance(metric, str) or not metric:
+                continue
+            if not _is_number(weight):
+                continue
+            normalized_weights[metric] = weight
+        candidate["metric_weights"] = normalized_weights
     valid, reason = _validate_candidate(candidate)
     if not valid:
         raise ValueError(reason)

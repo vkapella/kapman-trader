@@ -7,7 +7,7 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -94,6 +94,89 @@ def _snapshot_time_utc(snapshot_date: date) -> datetime:
     )
 
 
+def _fetch_snapshot_dates(
+    conn,
+    *,
+    start_date: Optional[date],
+    end_date: Optional[date],
+) -> list[date]:
+    """Return distinct NY dates available in daily_snapshots for the range.
+
+    The driver for B2 advancement must be authoritative snapshot availability,
+    not prior B2 output. We therefore derive target trading days from
+    daily_snapshots regardless of whether any Wyckoff events were emitted.
+    """
+
+    where_clauses: list[str] = []
+    params: list[Any] = []
+
+    if start_date:
+        where_clauses.append("(time AT TIME ZONE 'America/New_York')::date >= %s")
+        params.append(start_date)
+    if end_date:
+        where_clauses.append("(time AT TIME ZONE 'America/New_York')::date <= %s")
+        params.append(end_date)
+
+    where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT (time AT TIME ZONE 'America/New_York')::date AS ny_date
+            FROM daily_snapshots
+            {where_sql}
+            ORDER BY ny_date ASC
+            """,
+            tuple(params),
+        )
+        rows = cur.fetchall()
+    return [row[0] for row in rows]
+
+
+def _assert_snapshot_coverage(
+    conn,
+    *,
+    target_dates: Sequence[date],
+    ticker_ids: Sequence[str],
+):
+    """Ensure daily_snapshots already contains rows for every (ticker, date).
+
+    We fail fast if any target NY date is missing authoritative snapshots for
+    the tickers being processed. This protects determinism and prevents B2 from
+    silently creating new rows in lieu of upstream snapshots.
+    """
+
+    if not target_dates:
+        raise ValueError("no target_dates provided for B2 execution")
+    if not ticker_ids:
+        raise ValueError("no tickers resolved for B2 execution")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT (time AT TIME ZONE 'America/New_York')::date AS ny_date,
+                   COUNT(DISTINCT ticker_id) AS tickers_present
+            FROM daily_snapshots
+            WHERE (time AT TIME ZONE 'America/New_York')::date = ANY(%s)
+              AND ticker_id::text = ANY(%s)
+            GROUP BY ny_date
+            """,
+            (list(target_dates), list(ticker_ids)),
+        )
+        coverage = {row[0]: int(row[1]) for row in cur.fetchall()}
+
+    missing: list[date] = []
+    expected = len(set(ticker_ids))
+    for d in target_dates:
+        if coverage.get(d, 0) < expected:
+            missing.append(d)
+
+    if missing:
+        missing_str = ", ".join(sorted(d.isoformat() for d in missing))
+        raise ValueError(
+            f"daily_snapshots missing {expected - coverage.get(missing[0], 0)}+ ticker snapshots for date(s): {missing_str}"
+        )
+
+
 def _required_history_bars(cfg: WyckoffStructuralConfig) -> int:
     return max(cfg.min_bars_in_range, cfg.range_lookback, cfg.vol_lookback, cfg.lookback_trend)
 
@@ -149,30 +232,32 @@ def _fetch_ohlcv_history(
     start_date: Optional[date],
     end_date: Optional[date],
 ) -> list[tuple]:
-    if start_date and end_date:
-        where_clause = "date >= %s AND date <= %s"
-        params = (ticker_id, start_date, end_date)
-    elif start_date:
-        where_clause = "date >= %s"
-        params = (ticker_id, start_date)
-    elif end_date:
-        where_clause = "date <= %s"
-        params = (ticker_id, end_date)
-    else:
-        where_clause = "TRUE"
-        params = (ticker_id,)
+    snapshot_date = end_date
+    if snapshot_date is None:
+        raise ValueError("end_date (snapshot date) is required for B2 OHLCV lookback")
+    if start_date is None:
+        raise ValueError("start_date is required for B2 OHLCV window coverage")
+
+    cfg = WyckoffStructuralConfig()
+    required_bars = _required_history_bars(cfg)
+
+    # Conservative cushion to cover weekends/holidays without an explicit trading calendar.
+    lookback_start = start_date - timedelta(days=required_bars * 3)
 
     with conn.cursor() as cur:
         cur.execute(
-            f"""
+            """
             SELECT date, open, high, low, close, volume
             FROM public.ohlcv
-            WHERE ticker_id = %s AND {where_clause}
+            WHERE ticker_id = %s
+              AND date >= %s
+              AND date <= %s
             ORDER BY date ASC
             """,
-            params,
+            (ticker_id, lookback_start, snapshot_date),
         )
         rows = cur.fetchall()
+
     return rows
 
 
@@ -332,6 +417,13 @@ def run_wyckoff_structural_events_job(
             heartbeat_every,
         )
 
+    ticker_ids = [tid for tid, _ in tickers]
+    target_dates = _fetch_snapshot_dates(conn, start_date=start_date, end_date=end_date)
+    if not target_dates:
+        raise ValueError("No daily_snapshots dates found for requested window; cannot run B2")
+
+    _assert_snapshot_coverage(conn, target_dates=target_dates, ticker_ids=ticker_ids)
+
     cfg = WyckoffStructuralConfig()
     required_bars = _required_history_bars(cfg)
 
@@ -340,8 +432,8 @@ def run_wyckoff_structural_events_job(
             rows = _fetch_ohlcv_history(
                 conn,
                 ticker_id=ticker_id,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=target_dates[0],
+                end_date=target_dates[-1],
             )
             if not rows:
                 stats.missing_history += 1
@@ -394,8 +486,8 @@ def run_wyckoff_structural_events_job(
             context_rows: list[tuple] = []
             seen_context: set[tuple[date, str]] = set()
             now = datetime.now(timezone.utc)
-            for event_date in sorted(events_by_date.keys()):
-                evs = events_by_date[event_date]
+            for event_date in target_dates:
+                evs = events_by_date.get(event_date, [])
                 events_detected = [ev["event"] for ev in evs]
                 primary_event = _select_primary_event(evs)
                 events_json = {"events": evs}

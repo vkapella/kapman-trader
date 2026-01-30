@@ -255,7 +255,7 @@ optional arguments:
 
 ## Compute Wyckoff Structural Events
 
-KapMan B2r2: Persist canonical Wyckoff structural events into daily_snapshots
+KapMan B2: Persist canonical Wyckoff structural events into daily_snapshots
 
 usage: run_b2_wyckoff_structural_events.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat]  
 

@@ -1,5 +1,6 @@
 {
   "type": "object",
+  "additionalProperties": false,
   "required": [
     "context_label",
     "confidence_score",
@@ -19,6 +20,7 @@
     },
     "metric_assessment": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["supporting", "contradicting", "neutral"],
       "properties": {
         "supporting": { "type": "array", "items": { "type": "string" } },
@@ -27,8 +29,16 @@
       }
     },
     "metric_weights": {
-      "type": "object",
-      "additionalProperties": { "type": "number" }
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["metric", "weight"],
+        "properties": {
+          "metric": { "type": "string" },
+          "weight": { "type": "number" }
+        }
+      }
     },
     "discarded_metrics": {
       "type": "array",
@@ -36,6 +46,7 @@
     },
     "conditional_recommendation": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["direction", "action", "option_type", "option_strategy"],
       "properties": {
         "direction": { "type": "string" },

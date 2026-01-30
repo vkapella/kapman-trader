@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import psycopg2
@@ -10,7 +10,7 @@ import pytest
 
 from core.db.a6_migrations import default_migrations_dir, reset_and_migrate
 from core.ingestion.options.db import upsert_options_chains_rows
-from core.metrics.dealer_metrics_job import run_dealer_metrics_job
+from core.metrics.dealer_metrics_job import _snapshot_time_utc, run_dealer_metrics_job
 
 
 def _test_db_url() -> str | None:
@@ -90,8 +90,8 @@ def test_dealer_metrics_pipeline_persists_metrics_and_invalid_soft_fail() -> Non
 
     reset_and_migrate(db_url, default_migrations_dir())
 
-    snapshot_time = datetime(2025, 1, 2, tzinfo=timezone.utc)
-    snapshot_date = snapshot_time.date()
+    snapshot_date = date(2025, 1, 2)
+    snapshot_time = _snapshot_time_utc(snapshot_date)
 
     with psycopg2.connect(db_url) as conn:
         good_ticker = _seed_ticker(conn, symbol="AAPL", spot=Decimal("100.0"), snapshot_date=snapshot_date)
@@ -147,7 +147,7 @@ def test_dealer_metrics_pipeline_persists_metrics_and_invalid_soft_fail() -> Non
         upsert_options_chains_rows(conn, rows=rows)
 
         # Bad ticker: no options at snapshot_time -> should soft-fail as invalid.
-        run_dealer_metrics_job(conn, snapshot_time=snapshot_time)
+        run_dealer_metrics_job(conn, snapshot_dates=[snapshot_date])
 
         with conn.cursor() as cur:
             cur.execute(
