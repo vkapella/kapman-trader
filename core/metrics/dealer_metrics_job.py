@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
-import psycopg2
 from psycopg2.extras import Json
 
-from core.ingestion.options import db as options_db
 from core.metrics.dealer_metrics_calc import (
     DEFAULT_GEX_SLOPE_RANGE_PCT,
     DEFAULT_MAX_MONEYNESS,
@@ -24,12 +22,11 @@ from core.metrics.dealer_metrics_calc import (
 )
 
 
-DEFAULT_MODEL_VERSION = "A3-dealer-metrics-v1"
+DEFAULT_MODEL_VERSION = "A3-dealer-metrics-v2"
 DEFAULT_MAX_DTE_DAYS = 90
 DEFAULT_MIN_OPEN_INTEREST = 100
 DEFAULT_MIN_VOLUME = 1
-DEFAULT_HEARTBEAT_SECONDS = 60
-DEFAULT_HEARTBEAT_TICKERS = 25
+DEFAULT_HEARTBEAT_TICKERS = 50
 
 logger = logging.getLogger("kapman.a3")
 
@@ -133,8 +130,9 @@ def classify_dealer_status(
     return "INVALID", "criteria_not_met"
 
 
-def _snapshot_time_end_of_day_utc(snapshot_date: date) -> datetime:
-    return datetime(
+def _snapshot_time_utc(snapshot_date: date) -> datetime:
+    ny_tz = ZoneInfo("America/New_York")
+    local = datetime(
         year=snapshot_date.year,
         month=snapshot_date.month,
         day=snapshot_date.day,
@@ -142,42 +140,9 @@ def _snapshot_time_end_of_day_utc(snapshot_date: date) -> datetime:
         minute=59,
         second=59,
         microsecond=999999,
-        tzinfo=timezone.utc,
+        tzinfo=ny_tz,
     )
-
-
-def _resolve_snapshot_time(conn, provided: Optional[datetime]) -> Optional[datetime]:
-    if provided is not None:
-        if provided.tzinfo is None:
-            provided = provided.replace(tzinfo=timezone.utc)
-        return provided
-
-    with conn.cursor() as cur:
-        cur.execute("SELECT MAX(time) FROM options_chains")
-        row = cur.fetchone()
-    if not row or row[0] is None:
-        return None
-    ts: datetime = row[0]
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return _snapshot_time_end_of_day_utc(ts.date())
-
-
-def resolve_effective_trading_date(conn, snapshot_time: datetime) -> Optional[date]:
-    snapshot_date = snapshot_time.date()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT MAX(date)
-            FROM ohlcv
-            WHERE date <= %s
-            """,
-            (snapshot_date,),
-        )
-        row = cur.fetchone()
-    if not row:
-        return None
-    return row[0]
+    return local.astimezone(timezone.utc)
 
 
 def resolve_effective_options_time(conn, ticker_id: str, snapshot_time: datetime) -> Optional[datetime]:
@@ -211,6 +176,61 @@ def _fetch_watchlist_tickers(conn) -> List[Tuple[str, str]]:
         rows = cur.fetchall()
     return [(str(tid), str(sym).upper()) for tid, sym in rows]
 
+
+def _fetch_watchlist_tickers_with_dealer_metrics(conn, snapshot_time: datetime) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT t.id::text
+            FROM watchlists w
+            JOIN tickers t ON UPPER(t.symbol) = UPPER(w.symbol)
+            WHERE w.active = TRUE
+              AND EXISTS (
+                  SELECT 1
+                  FROM daily_snapshots s
+                  WHERE s.time = %s
+                    AND s.ticker_id = t.id
+                    AND s.dealer_metrics_json IS NOT NULL
+              )
+            """,
+            (snapshot_time,),
+        )
+        rows = cur.fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _fetch_watchlist_tickers_missing_dealer_metrics(conn, snapshot_time: datetime) -> List[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT t.id::text
+            FROM watchlists w
+            JOIN tickers t ON UPPER(t.symbol) = UPPER(w.symbol)
+            WHERE w.active = TRUE
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM daily_snapshots s
+                  WHERE s.time = %s
+                    AND s.ticker_id = t.id
+                    AND s.dealer_metrics_json IS NOT NULL
+              )
+            """,
+            (snapshot_time,),
+        )
+        rows = cur.fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _describe_date_range(snapshot_dates: Sequence[date]) -> str:
+    if not snapshot_dates:
+        return "none"
+    if len(snapshot_dates) == 1:
+        return snapshot_dates[0].isoformat()
+    return f"{snapshot_dates[0].isoformat()}..{snapshot_dates[-1].isoformat()}"
+
+
+def _should_process_ticker(ticker_id: str, existing_metrics: set[str]) -> bool:
+    return ticker_id not in existing_metrics
 
 def _safe_float(value: Any) -> Optional[float]:
     if value is None:
@@ -527,10 +547,18 @@ def _determine_metadata_status(
     return "INVALID"
 
 
+def _should_emit_heartbeat(processed: int, heartbeat_every: int) -> bool:
+    return heartbeat_every > 0 and processed > 0 and processed % heartbeat_every == 0
+
+
 def run_dealer_metrics_job(
     conn,
     *,
-    snapshot_time: Optional[datetime] = None,
+    snapshot_dates: Sequence[date],
+    fill_missing: bool = False,
+    heartbeat_every: int = DEFAULT_HEARTBEAT_TICKERS,
+    verbose: bool = False,
+    debug: bool = False,
     max_dte_days: int = DEFAULT_MAX_DTE_DAYS,
     min_open_interest: int = DEFAULT_MIN_OPEN_INTEREST,
     min_volume: int = DEFAULT_MIN_VOLUME,
@@ -538,8 +566,6 @@ def run_dealer_metrics_job(
     gex_slope_range_pct: float = DEFAULT_GEX_SLOPE_RANGE_PCT,
     max_moneyness: float = DEFAULT_MAX_MONEYNESS,
     spot_override: Optional[float] = None,
-    heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
-    heartbeat_tickers: int = DEFAULT_HEARTBEAT_TICKERS,
     model_version: str = DEFAULT_MODEL_VERSION,
     log: Optional[logging.Logger] = None,
 ) -> Dict[str, Any]:
@@ -547,34 +573,58 @@ def run_dealer_metrics_job(
     t_start = time.monotonic()
     MIN_ELIGIBLE_THRESHOLD = 5
 
-    snapshot_ts = _resolve_snapshot_time(conn, snapshot_time)
-    if snapshot_ts is None:
-        log.warning("[A3] No options_chains snapshots found; nothing to compute")
-        return {"tickers": 0, "processed": 0, "success": 0, "failed": 0, "duration_sec": 0.0}
-    log.info("[A3] dealer metrics snapshot_time=%s", snapshot_ts.isoformat())
-    snapshot_date = snapshot_ts.date()
+    snapshot_dates = sorted(snapshot_dates)
+    if not snapshot_dates:
+        return {
+            "dates": [],
+            "total_tickers": 0,
+            "processed": 0,
+            "skipped": 0,
+            "rows_written": 0,
+            "success": 0,
+            "failed": 0,
+            "duration_sec": 0.0,
+        }
 
     tickers = _fetch_watchlist_tickers(conn)
-    total_tickers = len(tickers)
-    if total_tickers == 0:
+    total_watchlist = len(tickers)
+    if total_watchlist == 0:
         log.warning("[A3] No active watchlist tickers resolved; nothing to compute")
-        return {"tickers": 0, "processed": 0, "success": 0, "failed": 0, "duration_sec": 0.0}
+        return {
+            "dates": [d.isoformat() for d in snapshot_dates],
+            "total_tickers": 0,
+            "processed": 0,
+            "skipped": 0,
+            "rows_written": 0,
+            "success": 0,
+            "failed": 0,
+            "duration_sec": 0.0,
+        }
 
+    symbol_map = {tid: symbol for tid, symbol in tickers}
+    all_ticker_ids = [tid for tid, _ in tickers]
+
+    ticker_plan: Dict[date, List[str]] = {}
+    if fill_missing:
+        for snapshot_date in snapshot_dates:
+            snapshot_time = _snapshot_time_utc(snapshot_date)
+            missing = _fetch_watchlist_tickers_missing_dealer_metrics(conn, snapshot_time)
+            ticker_plan[snapshot_date] = sorted(missing, key=lambda tid: symbol_map.get(tid, ""))
+    else:
+        for snapshot_date in snapshot_dates:
+            ticker_plan[snapshot_date] = all_ticker_ids.copy()
+
+    total_planned = sum(len(ids) for ids in ticker_plan.values())
+    date_desc = _describe_date_range(snapshot_dates)
+    flags_desc = (
+        f"debug={debug} verbose={verbose} heartbeat={heartbeat_every} fill_missing={fill_missing}"
+    )
     log.info(
-        "[A3] RUN HEADER snapshot_time=%s max_dte_days=%s min_open_interest=%s "
-        "min_volume=%s walls_top_n=%s gex_slope_range_pct=%.4f max_moneyness=%.4f "
-        "spot_override=%s tickers=%s heartbeat_seconds=%s heartbeat_tickers=%s deterministic=true",
-        snapshot_ts.isoformat(),
-        max_dte_days,
-        min_open_interest,
-        min_volume,
-        walls_top_n,
-        gex_slope_range_pct,
-        max_moneyness,
-        spot_override,
-        total_tickers,
-        heartbeat_seconds,
-        heartbeat_tickers,
+        "[A3] START date=%s tickers=%s flags=%s",
+        date_desc,
+        total_planned,
+        flags_desc,
+        extra={"a3_summary": True},
     )
 
     params = {
@@ -587,234 +637,197 @@ def run_dealer_metrics_job(
     }
 
     processed = 0
+    skipped = 0
+    rows_written = 0
     success = 0
     failed = 0
+    scanned = 0
     cumulative_durations: List[float] = []
-    last_heartbeat = time.monotonic()
 
-    effective_trading_date = resolve_effective_trading_date(conn, snapshot_ts)
-    if effective_trading_date is None:
-        log.error(
-            "[A3] Unable to resolve effective_trading_date for snapshot_time=%s",
-            snapshot_ts.isoformat(),
-        )
+    for snapshot_date in snapshot_dates:
+        snapshot_time = _snapshot_time_utc(snapshot_date)
+        existing_metrics = _fetch_watchlist_tickers_with_dealer_metrics(conn, snapshot_time)
+        ticker_ids = ticker_plan.get(snapshot_date, [])
 
-    for ticker_id, symbol in tickers:
-        t0 = time.monotonic()
-        diagnostics: List[str] = []
-        attempted_spot_sources: List[str] = []
-        spot_resolution_strategy: Optional[str] = None
-        effective_options_date = effective_trading_date
-        effective_options_time = resolve_effective_options_time(conn, ticker_id, snapshot_ts)
-        options_time_resolution_strategy = "max_leq_snapshot"
-        if effective_options_time is None:
-            diagnostics.append(
-                "no_options_before_snapshot:"
-                f"snapshot_time={snapshot_ts.isoformat()},"
-                "attempted_resolution=max(options_chains.time <= snapshot_time)"
-            )
-        spot = spot_override
-        if spot is not None:
-            spot_source = "override"
-            spot_resolution_strategy = "override"
-            attempted_spot_sources.append("override")
-        else:
-            attempted_spot_sources.append("price_metrics")
-            spot, price_source = _load_price_metrics_spot(
-                conn, ticker_id=ticker_id, snapshot_time=snapshot_ts
-            )
-            if spot is not None and price_source is not None:
-                spot_source = price_source
-                spot_resolution_strategy = "price_metrics"
-            else:
-                attempted_spot_sources.append("ohlcv")
-                if effective_trading_date is None:
-                    diagnostics.append("no_effective_trading_date")
-                else:
-                    spot = _load_spot_price(
-                        conn, ticker_id=ticker_id, snapshot_date=effective_trading_date
+        day_processed = 0
+        day_skipped = 0
+        day_rows_written = 0
+
+        for ticker_id in ticker_ids:
+            scanned += 1
+            symbol = symbol_map.get(ticker_id, ticker_id)
+            if not _should_process_ticker(ticker_id, existing_metrics):
+                skipped += 1
+                day_skipped += 1
+                if verbose:
+                    log.info(
+                        "[A3] skip existing dealer metrics ticker=%s date=%s",
+                        symbol,
+                        snapshot_date.isoformat(),
                     )
-                if spot is not None:
-                    spot_source = "ohlcv"
-                    spot_resolution_strategy = "ohlcv_fallback"
-                else:
-                    spot_source = None
+                if _should_emit_heartbeat(scanned, heartbeat_every):
+                    log.info(
+                        "[A3] HEARTBEAT processed=%s/%s ticker=%s",
+                        scanned,
+                        total_planned,
+                        symbol,
+                    )
+                continue
 
-        try:
-            contracts, filter_stats = _load_option_contracts(
-                conn,
-                ticker_id=ticker_id,
-                effective_options_time=effective_options_time,
-                effective_options_date=effective_options_date,
-                max_dte_days=max_dte_days,
-                min_open_interest=min_open_interest,
-                min_volume=min_volume,
-            )
-
-            eligible_options = len(contracts)
-            total_options = filter_stats.total
-            if total_options > 0 and eligible_options == 0:
+            t0 = time.monotonic()
+            diagnostics: List[str] = []
+            attempted_spot_sources: List[str] = []
+            spot_resolution_strategy: Optional[str] = None
+            effective_options_date = snapshot_date
+            effective_options_time = resolve_effective_options_time(conn, ticker_id, snapshot_time)
+            options_time_resolution_strategy = "max_leq_snapshot"
+            if effective_options_time is None:
                 diagnostics.append(
-                    "no_eligible_options:"
-                    f"effective_options_date={effective_options_date.isoformat() if effective_options_date else 'none'},"
-                    f"max_dte_days={max_dte_days},"
-                    f"dte_exceeded={filter_stats.dte_exceeded},"
-                    f"low_open_interest={filter_stats.low_open_interest},"
-                    f"low_volume={filter_stats.low_volume}"
+                    "no_options_before_snapshot:"
+                    f"snapshot_time={snapshot_time.isoformat()},"
+                    "attempted_resolution=max(options_chains.time <= snapshot_time)"
                 )
-            if spot is None:
-                diagnostics.append("missing_spot_price")
-                computation = DealerComputationResult(
-                    gex_total=None,
-                    gex_net=None,
-                    gamma_flip=None,
-                    call_walls=[],
-                    put_walls=[],
-                    gex_slope=None,
-                    dgpi=None,
-                    position="unknown",
-                    confidence="invalid",
-                    strike_gex={},
-                )
-                status = "FAIL_MISSING_SPOT"
-                failure_reason = "missing_spot_price"
-                if total_options > 0 and eligible_options > 0:
-                    status = "FAIL_SPOT_RESOLUTION"
-                    failure_reason = "spot_resolution_failed"
-                    attempted = ",".join(attempted_spot_sources) if attempted_spot_sources else "none"
-                    diag_effective_date = (
-                        effective_trading_date.isoformat() if effective_trading_date else "none"
-                    )
-                    diagnostics.append(
-                        f"spot_resolution_failed:snapshot_time={snapshot_ts.isoformat()},"
-                        f"effective_trading_date={diag_effective_date},"
-                        f"attempted_sources=[{attempted}]"
-                    )
+
+            spot = spot_override
+            if spot is not None:
+                spot_source = "override"
+                spot_resolution_strategy = "override"
+                attempted_spot_sources.append("override")
             else:
-                computation = calculate_metrics(
-                    contracts,
+                attempted_spot_sources.append("price_metrics")
+                spot, price_source = _load_price_metrics_spot(
+                    conn, ticker_id=ticker_id, snapshot_time=snapshot_time
+                )
+                if spot is not None and price_source is not None:
+                    spot_source = price_source
+                    spot_resolution_strategy = "price_metrics"
+                else:
+                    attempted_spot_sources.append("ohlcv")
+                    spot = _load_spot_price(
+                        conn, ticker_id=ticker_id, snapshot_date=effective_options_date
+                    )
+                    if spot is not None:
+                        spot_source = "ohlcv"
+                        spot_resolution_strategy = "ohlcv_fallback"
+                    else:
+                        spot_source = None
+
+            try:
+                contracts, filter_stats = _load_option_contracts(
+                    conn,
+                    ticker_id=ticker_id,
+                    effective_options_time=effective_options_time,
+                    effective_options_date=effective_options_date,
+                    max_dte_days=max_dte_days,
+                    min_open_interest=min_open_interest,
+                    min_volume=min_volume,
+                )
+
+                eligible_options = len(contracts)
+                total_options = filter_stats.total
+                if total_options > 0 and eligible_options == 0:
+                    diagnostics.append(
+                        "no_eligible_options:"
+                        f"effective_options_date={effective_options_date.isoformat()},"
+                        f"max_dte_days={max_dte_days},"
+                        f"dte_exceeded={filter_stats.dte_exceeded},"
+                        f"low_open_interest={filter_stats.low_open_interest},"
+                        f"low_volume={filter_stats.low_volume}"
+                    )
+                if spot is None:
+                    diagnostics.append("missing_spot_price")
+                    computation = DealerComputationResult(
+                        gex_total=None,
+                        gex_net=None,
+                        gamma_flip=None,
+                        call_walls=[],
+                        put_walls=[],
+                        gex_slope=None,
+                        dgpi=None,
+                        position="unknown",
+                        confidence="invalid",
+                        strike_gex={},
+                    )
+                    status = "FAIL_MISSING_SPOT"
+                    failure_reason = "missing_spot_price"
+                    if total_options > 0 and eligible_options > 0:
+                        status = "FAIL_SPOT_RESOLUTION"
+                        failure_reason = "spot_resolution_failed"
+                        attempted = ",".join(attempted_spot_sources) if attempted_spot_sources else "none"
+                        diagnostics.append(
+                            f"spot_resolution_failed:snapshot_time={snapshot_time.isoformat()},"
+                            f"effective_trading_date={effective_options_date.isoformat()},"
+                            f"attempted_sources=[{attempted}]"
+                        )
+                else:
+                    computation = calculate_metrics(
+                        contracts,
+                        spot=spot,
+                        walls_top_n=walls_top_n,
+                        gex_slope_range_pct=gex_slope_range_pct,
+                        max_moneyness=max_moneyness,
+                    )
+                    status = "SUCCESS"
+                    failure_reason = None
+
+                if status == "SUCCESS":
+                    if total_options == 0:
+                        status = "FAIL_NO_OPTIONS"
+                        failure_reason = "no_options_available"
+                        diagnostics.append("no_options_available")
+                    elif eligible_options == 0:
+                        status = "FAIL_NO_ELIGIBLE_OPTIONS"
+                        failure_reason = "all_contracts_filtered"
+                        diagnostics.append("all_contracts_filtered")
+
+                quality_status, status_reason = classify_dealer_status(
+                    eligible_options=eligible_options,
+                    gex_total=computation.gex_total,
+                    gex_net=computation.gex_net,
+                    position=computation.position,
+                    confidence=computation.confidence,
+                    diagnostics=diagnostics,
+                )
+
+                payload = _build_payload(
+                    computation=computation,
+                    snapshot_time=snapshot_time,
+                    snapshot_date=snapshot_date,
+                    ticker_id=ticker_id,
+                    symbol=symbol,
                     spot=spot,
-                    walls_top_n=walls_top_n,
-                    gex_slope_range_pct=gex_slope_range_pct,
+                    spot_source=spot_source,
+                    spot_resolution_strategy=spot_resolution_strategy,
+                    effective_options_time=effective_options_time,
+                    options_time_resolution_strategy=options_time_resolution_strategy,
+                    effective_trading_date=snapshot_date,
+                    attempted_spot_sources=attempted_spot_sources,
+                    filter_stats=filter_stats,
+                    params=params,
+                    diagnostics=diagnostics,
+                    contracts_used=len(contracts),
+                    processing_status=status,
+                    failure_reason=failure_reason,
+                    quality_status=quality_status,
+                    status_reason=status_reason,
+                    eligible_options=eligible_options,
+                    total_options=total_options,
                     max_moneyness=max_moneyness,
                 )
-                status = "SUCCESS"
-                failure_reason = None
 
-            if status == "SUCCESS":
-                if total_options == 0:
-                    status = "FAIL_NO_OPTIONS"
-                    failure_reason = "no_options_available"
-                    diagnostics.append("no_options_available")
-                elif eligible_options == 0:
-                    status = "FAIL_NO_ELIGIBLE_OPTIONS"
-                    failure_reason = "all_contracts_filtered"
-                    diagnostics.append("all_contracts_filtered")
-
-            quality_status, status_reason = classify_dealer_status(
-                eligible_options=eligible_options,
-                gex_total=computation.gex_total,
-                gex_net=computation.gex_net,
-                position=computation.position,
-                confidence=computation.confidence,
-                diagnostics=diagnostics,
-            )
-
-            payload = _build_payload(
-                computation=computation,
-                snapshot_time=snapshot_ts,
-                snapshot_date=snapshot_date,
-                ticker_id=ticker_id,
-                symbol=symbol,
-                spot=spot,
-                spot_source=spot_source,
-                spot_resolution_strategy=spot_resolution_strategy,
-                effective_options_time=effective_options_time,
-                options_time_resolution_strategy=options_time_resolution_strategy,
-                effective_trading_date=effective_trading_date,
-                attempted_spot_sources=attempted_spot_sources,
-                filter_stats=filter_stats,
-                params=params,
-                diagnostics=diagnostics,
-                contracts_used=len(contracts),
-                processing_status=status,
-                failure_reason=failure_reason,
-                quality_status=quality_status,
-                status_reason=status_reason,
-                eligible_options=eligible_options,
-                total_options=total_options,
-                max_moneyness=max_moneyness,
-            )
-
-            metadata_status = _determine_metadata_status(
-                eligible_options=eligible_options,
-                diagnostics=diagnostics,
-                processing_status=status,
-                confidence=computation.confidence,
-                min_eligible_threshold=MIN_ELIGIBLE_THRESHOLD,
-            )
-            payload["metadata"]["status"] = metadata_status
-
-            retries = 0
-            while True:
-                try:
-                    _upsert_dealer_metrics(
-                        conn,
-                        snapshot_time=snapshot_ts,
-                        ticker_id=ticker_id,
-                        payload=payload,
-                        model_version=model_version,
-                    )
-                    conn.commit()
-                    break
-                except Exception:
-                    conn.rollback()
-                    retries += 1
-                    if retries >= 3:
-                        raise
-                    time.sleep(0.25 * retries)
-
-            if status == "SUCCESS":
-                success += 1
-            else:
-                failed += 1
-
-            if log.isEnabledFor(logging.DEBUG):
-                log_diagnostics = diagnostics if quality_status != "FULL" else []
-                log.debug(
-                    "[A3] ticker=%s snapshot_time=%s effective_trading_date=%s "
-                    "effective_options_time=%s effective_options_date=%s "
-                    "spot_source=%s spot=%s total_options=%s eligible_options=%s "
-                    "confidence=%s status=%s "
-                    "gex_total=%s gex_net=%s gamma_flip=%s walls_top_n=%s position=%s "
-                    "confidence=%s filters=%s diagnostics=%s",
-                    symbol,
-                    snapshot_ts.isoformat(),
-                    effective_trading_date.isoformat() if effective_trading_date else None,
-                    effective_options_time.isoformat() if effective_options_time else None,
-                    effective_options_date.isoformat() if effective_options_date else None,
-                    spot_source,
-                    spot,
-                    total_options,
-                    eligible_options,
-                    computation.confidence,
-                    quality_status,
-                    computation.gex_total,
-                    computation.gex_net,
-                    computation.gamma_flip,
-                    walls_top_n,
-                    computation.position,
-                    computation.confidence,
-                    filter_stats.to_dict(),
-                    log_diagnostics,
+                metadata_status = _determine_metadata_status(
+                    eligible_options=eligible_options,
+                    diagnostics=diagnostics,
+                    processing_status=status,
+                    confidence=computation.confidence,
+                    min_eligible_threshold=MIN_ELIGIBLE_THRESHOLD,
                 )
-        except Exception:
-            status = "COMPUTATION_ERROR"
-            failure_reason = "exception"
-            failed += 1
-            diagnostics.append("exception")
-            log.exception("[A3] ticker=%s failed", symbol)
-            try:
+                payload["metadata"]["status"] = metadata_status
+            except Exception:
+                status = "COMPUTATION_ERROR"
+                failure_reason = "exception"
+                diagnostics.append("exception")
+                log.exception("[A3] ticker=%s failed", symbol)
                 payload = _build_payload(
                     computation=DealerComputationResult(
                         gex_total=None,
@@ -828,7 +841,7 @@ def run_dealer_metrics_job(
                         confidence="invalid",
                         strike_gex={},
                     ),
-                    snapshot_time=snapshot_ts,
+                    snapshot_time=snapshot_time,
                     snapshot_date=snapshot_date,
                     ticker_id=ticker_id,
                     symbol=symbol,
@@ -837,7 +850,7 @@ def run_dealer_metrics_job(
                     spot_resolution_strategy=spot_resolution_strategy,
                     effective_options_time=effective_options_time,
                     options_time_resolution_strategy=options_time_resolution_strategy,
-                    effective_trading_date=effective_trading_date,
+                    effective_trading_date=snapshot_date,
                     attempted_spot_sources=attempted_spot_sources,
                     filter_stats=FilterStats(total=1, other=1),
                     params=params,
@@ -851,165 +864,116 @@ def run_dealer_metrics_job(
                     total_options=0,
                     max_moneyness=max_moneyness,
                 )
-                metadata_status = _determine_metadata_status(
+                payload["metadata"]["status"] = _determine_metadata_status(
                     eligible_options=0,
                     diagnostics=diagnostics,
                     processing_status=status,
                     confidence="invalid",
                     min_eligible_threshold=MIN_ELIGIBLE_THRESHOLD,
                 )
-                payload["metadata"]["status"] = metadata_status
-                _upsert_dealer_metrics(
-                    conn,
-                    snapshot_time=snapshot_ts,
-                    ticker_id=ticker_id,
-                    payload=payload,
-                    model_version=model_version,
-                )
-                conn.commit()
+
+            try:
+                retries = 0
+                while True:
+                    try:
+                        _upsert_dealer_metrics(
+                            conn,
+                            snapshot_time=snapshot_time,
+                            ticker_id=ticker_id,
+                            payload=payload,
+                            model_version=model_version,
+                        )
+                        conn.commit()
+                        break
+                    except Exception:
+                        conn.rollback()
+                        retries += 1
+                        if retries >= 3:
+                            raise
+                        time.sleep(0.25 * retries)
             except Exception:
-                conn.rollback()
-        finally:
+                log.exception("[A3] database write failed ticker=%s date=%s", symbol, snapshot_date)
+                raise
+
             processed += 1
+            day_processed += 1
+            rows_written += 1
+            day_rows_written += 1
+
+            if status == "SUCCESS":
+                success += 1
+            else:
+                failed += 1
+                log.warning(
+                    "[A3] %s for %s on %s (reason=%s)",
+                    status,
+                    symbol,
+                    snapshot_date.isoformat(),
+                    failure_reason,
+                )
+
+            if verbose:
+                log.info(
+                    "[A3] ticker=%s status=%s options_snapshot=%s",
+                    symbol,
+                    status,
+                    effective_options_time.isoformat() if effective_options_time else None,
+                )
+            if debug:
+                log.debug(
+                    "[A3] metrics detail %s %s",
+                    symbol,
+                    payload,
+                )
+
             elapsed = time.monotonic() - t0
             cumulative_durations.append(elapsed)
 
-            now = time.monotonic()
-            count_trigger = heartbeat_tickers > 0 and processed % heartbeat_tickers == 0
-            time_trigger = heartbeat_seconds > 0 and (now - last_heartbeat) >= heartbeat_seconds
-            if count_trigger or time_trigger:
-                percent = (processed / total_tickers) * 100.0
+            if _should_emit_heartbeat(scanned, heartbeat_every):
                 log.info(
-                    "[A3] HEARTBEAT processed=%s/%s (%.2f%%)",
-                    processed,
-                    total_tickers,
-                    percent,
+                    "[A3] HEARTBEAT processed=%s/%s ticker=%s",
+                    scanned,
+                    total_planned,
+                    symbol,
                 )
-                last_heartbeat = now
+
+        if fill_missing:
+            day_skipped = len(existing_metrics)
+            skipped += day_skipped
+        log.info(
+            "[A3] SUMMARY date=%s processed=%s skipped=%s rows_written=%s",
+            snapshot_date.isoformat(),
+            day_processed,
+            day_skipped,
+            day_rows_written,
+            extra={"a3_summary": True},
+        )
 
     duration = time.monotonic() - t_start
     avg = sum(cumulative_durations) / len(cumulative_durations) if cumulative_durations else 0.0
 
     log.info(
-        "[A3] SUMMARY snapshot_time=%s total_tickers=%s success=%s soft_fail=%s "
+        "[A3] END date=%s processed=%s skipped=%s rows_written=%s success=%s failed=%s "
         "avg_sec_per_ticker=%.6f duration_sec=%.3f",
-        snapshot_ts.isoformat(),
-        total_tickers,
+        date_desc,
+        processed,
+        skipped,
+        rows_written,
         success,
         failed,
         avg,
         duration,
+        extra={"a3_summary": True},
     )
 
     return {
-        "tickers": total_tickers,
+        "dates": [d.isoformat() for d in snapshot_dates],
+        "total_tickers": total_planned,
         "processed": processed,
+        "skipped": skipped,
+        "rows_written": rows_written,
         "success": success,
         "failed": failed,
         "avg_sec_per_ticker": avg,
         "duration_sec": duration,
     }
-
-
-def _parse_snapshot_time(value: str) -> datetime:
-    try:
-        ts = datetime.fromisoformat(value)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        return ts
-    except Exception as exc:
-        raise argparse.ArgumentTypeError(f"Invalid snapshot time: {value}") from exc
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="KapMan A3: Compute dealer metrics into daily_snapshots"
-    )
-    parser.add_argument("--db-url", type=str, default=None, help="Override DATABASE_URL")
-    parser.add_argument("--snapshot-time", type=_parse_snapshot_time, default=None, help="Snapshot time (ISO 8601)")
-    parser.add_argument("--max-dte-days", type=int, default=DEFAULT_MAX_DTE_DAYS, help="Max DTE days (default 90)")
-    parser.add_argument(
-        "--min-open-interest",
-        type=int,
-        default=DEFAULT_MIN_OPEN_INTEREST,
-        help="Min open interest per contract (default 100)",
-    )
-    parser.add_argument(
-        "--min-volume",
-        type=int,
-        default=DEFAULT_MIN_VOLUME,
-        help="Min volume per contract (default 1)",
-    )
-    parser.add_argument(
-        "--walls-top-n",
-        type=int,
-        default=DEFAULT_WALLS_TOP_N,
-        help="Number of call/put walls to retain (default 3)",
-    )
-    parser.add_argument(
-        "--gex-slope-range-pct",
-        type=float,
-        default=DEFAULT_GEX_SLOPE_RANGE_PCT,
-        help="Price window percentage for GEX slope (default 0.02)",
-    )
-    parser.add_argument(
-        "--max-moneyness",
-        type=float,
-        default=DEFAULT_MAX_MONEYNESS,
-        help="Max moneyness fraction for wall eligibility (default 0.2)",
-    )
-    parser.add_argument(
-        "--spot-override",
-        type=float,
-        default=None,
-        help="Override spot price for all tickers (diagnostics only)",
-    )
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        choices=["DEBUG", "INFO", "WARNING"],
-        default="INFO",
-        help="Log level (default INFO)",
-    )
-    return parser
-
-
-def _configure_logging(level: str) -> logging.Logger:
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    log = logging.getLogger("kapman.a3")
-    log.handlers.clear()
-    log.propagate = False
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-    handler.setLevel(log_level)
-    log.addHandler(handler)
-    log.setLevel(log_level)
-    return log
-
-
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    log = _configure_logging(args.log_level)
-    db_url = args.db_url or options_db.default_db_url()
-
-    with psycopg2.connect(db_url) as conn:
-        run_dealer_metrics_job(
-            conn,
-            snapshot_time=args.snapshot_time,
-            max_dte_days=args.max_dte_days,
-            min_open_interest=args.min_open_interest,
-            min_volume=args.min_volume,
-            walls_top_n=args.walls_top_n,
-            gex_slope_range_pct=args.gex_slope_range_pct,
-            max_moneyness=args.max_moneyness,
-            spot_override=args.spot_override,
-            log=log,
-        )
-
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
