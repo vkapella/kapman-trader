@@ -85,23 +85,32 @@ def resolve_calendar_dates_to_ingest(
     end: date,
 ) -> list[date]:
     desired = list(iter_calendar_dates(start, end))
-    available = set(
-        list_available_dates_in_range(
-            s3,
-            bucket=bucket,
-            prefix=prefix,
-            start=start,
-            end=end,
-        )
+    available = list_available_dates_in_range(
+        s3,
+        bucket=bucket,
+        prefix=prefix,
+        start=start,
+        end=end,
     )
-    missing = [d for d in desired if d not in available]
+    available_set = set(available)
+    missing = [d for d in desired if d not in available_set]
+
+    if not available:
+        raise IngestionError(
+            f"No Polygon S3 daily files found in range {start.isoformat()}..{end.isoformat()} "
+            f"under prefix {prefix!r}"
+        )
+
     if missing:
         sample = ", ".join(d.isoformat() for d in missing[:15])
-        raise IngestionError(
-            f"Missing Polygon S3 daily files for {len(missing)} requested dates "
-            f"(sample: {sample}) under prefix {prefix!r}"
+        logger.warning(
+            "Missing Polygon S3 daily files for %d requested dates (sample: %s) under prefix %r",
+            len(missing),
+            sample,
+            prefix,
         )
-    return desired
+
+    return available
 
 
 def ingest_ohlcv(
