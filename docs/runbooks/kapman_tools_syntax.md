@@ -450,3 +450,8 @@ optional arguments:
                         PNG batch size per PDF (default: 30)
   --ta-metrics TA_METRICS
                         Comma-separated TA metrics: MA,RSI,MACD,OBV,ADX
+
+
+## Refreh data
+
+Generate OHLCV + TA chart packs (PNG + PDF) for LLM processing from persisted KapMan OHLCV data.                     

@@ -5,10 +5,10 @@ set -euo pipefail
 # KapMan SAFE CATCH-UP SCRIPT
 #
 # Usage:
-#   ./run_kapman_catchup.sh START_DATE END_DATE
+#   scripts/cron/catchup_START_DATE_to_END_DATE.sh START_DATE END_DATE
 #
 # Example:
-#   ./run_kapman_catchup.sh 2026-01-27 2026-01-28
+#   scripts/cron/catchup_START_DATE_to_END_DATE.sh 2026-01-27 2026-01-28
 #
 # Order:
 #   A0  OHLCV
@@ -52,11 +52,15 @@ echo
 echo "============================================================"
 echo "STEP 1: OHLCV BASE INGEST (A0)"
 echo "============================================================"
-python -m scripts.ingest_ohlcv base \
-  --days 3 \
-  --as-of "${END_DATE}" \
-  --verbosity normal
+#python -m scripts.ingest_ohlcv base \
+#  --days 3 \
+#  --as-of "${END_DATE}" \
+#  --verbosity normal
 
+python -m scripts.ingest_ohlcv backfill \
+  --start "${START_DATE}" \
+  --end "${END_DATE}" \
+  --verbosity normal
 # ------------------------------------------------------------
 echo
 echo "============================================================"
