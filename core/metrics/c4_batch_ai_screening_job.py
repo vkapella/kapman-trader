@@ -20,6 +20,7 @@ from typing import Any, Iterable, Optional, Sequence
 import psycopg2
 from psycopg2.extras import execute_values
 
+from core.daily_snapshots import CANONICAL_DAILY_SNAPSHOT_UTC_TIME, canonical_daily_snapshot_time, ny_trading_date
 from core.ingestion.options.db import default_db_url
 from core.providers.ai.invoke import invoke_planning_agent
 from core.providers.ai.prompt_loader import load_prompt, load_schema
@@ -147,10 +148,17 @@ def _summary_computed(summary: Any) -> bool:
 def _resolve_snapshot_time(conn, provided: Optional[datetime]) -> Optional[datetime]:
     if provided is not None:
         if provided.tzinfo is None:
-            return provided.replace(tzinfo=timezone.utc)
-        return provided
+            provided = provided.replace(tzinfo=timezone.utc)
+        return canonical_daily_snapshot_time(ny_trading_date(provided))
     with conn.cursor() as cur:
-        cur.execute("SELECT MAX(time) FROM daily_snapshots")
+        cur.execute(
+            """
+            SELECT MAX(time)
+            FROM daily_snapshots
+            WHERE (time AT TIME ZONE 'UTC')::time = %s
+            """,
+            (CANONICAL_DAILY_SNAPSHOT_UTC_TIME,),
+        )
         row = cur.fetchone()
     if not row or row[0] is None:
         return None

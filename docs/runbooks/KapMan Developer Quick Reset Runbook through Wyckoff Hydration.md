@@ -593,10 +593,10 @@ Echo "--------------------------------------------------------------------------
 docker exec -it kapman-db psql -U kapman -d kapman -c "SELECT MIN(time), MAX(time) FROM daily_snapshots;"
 
 Echo "----------------------------------------------------------------------------"
-Echo "16. Sanity check: detect duplicate snapshots per ticker per day"
+Echo "16. Sanity check: detect duplicate snapshots per ticker per NY trading day"
 Echo "----------------------------------------------------------------------------"
 
-docker exec -it kapman-db psql -U kapman -d kapman -c  "SELECT time::date,COUNT(*) - COUNT(DISTINCT ticker_id) AS duplicates FROM daily_snapshots GROUP BY time::date HAVING COUNT(*) <> COUNT(DISTINCT ticker_id) ORDER BY time::date DESC;"
+docker exec -it kapman-db psql -U kapman -d kapman -c  "SELECT (time AT TIME ZONE 'America/New_York')::date AS ny_trading_day, COUNT(*) - COUNT(DISTINCT ticker_id) AS duplicates FROM daily_snapshots GROUP BY ny_trading_day HAVING COUNT(*) <> COUNT(DISTINCT ticker_id) ORDER BY ny_trading_day DESC;"
 
 
 * Step 11 — Optional: Full Integration Test Sweep (Schema + Invariants + A6.1 Coverage)

@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import psycopg2
 import pytest
+from psycopg2.extras import Json
 
 from core.db.a6_migrations import default_migrations_dir, reset_and_migrate
 from core.ingestion.options.db import upsert_options_chains_rows
@@ -45,6 +46,24 @@ def _seed_ticker(conn, *, symbol: str, spot: Decimal, snapshot_date: date) -> st
         )
     conn.commit()
     return ticker_id
+
+
+def _seed_canonical_snapshot_row(conn, *, ticker_id: str, snapshot_time: datetime, spot: Decimal) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO daily_snapshots (time, ticker_id, price_metrics_json, created_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (time, ticker_id) DO NOTHING
+            """,
+            (
+                snapshot_time,
+                ticker_id,
+                Json({"close": float(spot)}),
+                snapshot_time,
+            ),
+        )
+    conn.commit()
 
 
 def _options_row(
@@ -96,6 +115,8 @@ def test_dealer_metrics_pipeline_persists_metrics_and_invalid_soft_fail() -> Non
     with psycopg2.connect(db_url) as conn:
         good_ticker = _seed_ticker(conn, symbol="AAPL", spot=Decimal("100.0"), snapshot_date=snapshot_date)
         bad_ticker = _seed_ticker(conn, symbol="MSFT", spot=Decimal("200.0"), snapshot_date=snapshot_date)
+        _seed_canonical_snapshot_row(conn, ticker_id=good_ticker, snapshot_time=snapshot_time, spot=Decimal("100.0"))
+        _seed_canonical_snapshot_row(conn, ticker_id=bad_ticker, snapshot_time=snapshot_time, spot=Decimal("200.0"))
 
         rows: list[dict] = []
         # Calls (primary wall at 100)
@@ -121,7 +142,7 @@ def test_dealer_metrics_pipeline_persists_metrics_and_invalid_soft_fail() -> Non
                 )
             )
 
-        # Puts (primary wall at 90)
+        # Puts (primary wall at 95 under the current distance/strength ranking)
         put_strikes = [Decimal("90"), Decimal("95"), Decimal("85"), Decimal("80"), Decimal("75"), Decimal("70")]
         put_ois = [420, 360, 320, 280, 260, 240]
         if len(put_strikes) != len(put_ois):
@@ -167,7 +188,7 @@ def test_dealer_metrics_pipeline_persists_metrics_and_invalid_soft_fail() -> Non
         good = payloads[good_ticker]
         assert good["confidence"] in {"high", "medium"}
         assert good["call_walls"][0]["strike"] == 100.0
-        assert good["put_walls"][0]["strike"] == 90.0
+        assert good["put_walls"][0]["strike"] == 95.0
         assert len(good["call_walls"]) == 3
         assert len(good["put_walls"]) == 3
         assert good["gex_total"] is not None
@@ -178,3 +199,15 @@ def test_dealer_metrics_pipeline_persists_metrics_and_invalid_soft_fail() -> Non
         bad = payloads[bad_ticker]
         assert bad["confidence"] == "invalid"
         assert "diagnostics" in bad["metadata"]
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM daily_snapshots
+                WHERE ticker_id = %s
+                  AND (time AT TIME ZONE 'UTC')::time IN ('03:59:59.999999'::time, '04:59:59.999999'::time, '23:00:00'::time)
+                """,
+                (good_ticker,),
+            )
+            assert cur.fetchone()[0] == 0

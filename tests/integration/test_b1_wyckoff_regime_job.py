@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import psycopg2
 import pytest
@@ -26,6 +26,20 @@ def _snapshot_time_for_date(snapshot_date: date) -> datetime:
         snapshot_date.month,
         snapshot_date.day,
         23,
+        59,
+        59,
+        999999,
+        tzinfo=timezone.utc,
+    )
+
+
+def _split_snapshot_time_for_date(snapshot_date: date) -> datetime:
+    next_day = snapshot_date + timedelta(days=1)
+    return datetime(
+        next_day.year,
+        next_day.month,
+        next_day.day,
+        4,
         59,
         59,
         999999,
@@ -101,14 +115,47 @@ def _seed_events(
     conn.commit()
 
 
+def _seed_duplicate_split_snapshot(conn, *, ticker_id: str, snapshot_date: date) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO daily_snapshots (time, ticker_id, created_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (time, ticker_id) DO NOTHING
+            """,
+            (
+                _split_snapshot_time_for_date(snapshot_date),
+                ticker_id,
+                _split_snapshot_time_for_date(snapshot_date),
+            ),
+        )
+    conn.commit()
+
+
 def _fetch_regimes(conn, ticker_id: str) -> dict[date, str | None]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT time::date, wyckoff_regime
-            FROM daily_snapshots
-            WHERE ticker_id = %s
-            ORDER BY time ASC
+            WITH ranked AS (
+                SELECT DISTINCT ON ((time AT TIME ZONE 'America/New_York')::date)
+                    (time AT TIME ZONE 'America/New_York')::date AS ny_date,
+                    wyckoff_regime,
+                    CASE
+                        WHEN (time AT TIME ZONE 'UTC')::time = '23:59:59.999999'::time THEN 0
+                        ELSE 1
+                    END AS precedence,
+                    time
+                FROM daily_snapshots
+                WHERE ticker_id = %s
+                ORDER BY
+                    (time AT TIME ZONE 'America/New_York')::date,
+                    precedence,
+                    CASE WHEN wyckoff_regime IS NULL THEN 1 ELSE 0 END,
+                    time DESC
+            )
+            SELECT ny_date, wyckoff_regime
+            FROM ranked
+            ORDER BY ny_date ASC
             """,
             (ticker_id,),
         )
@@ -122,10 +169,28 @@ def _fetch_all_regimes(conn, ticker_ids: list[str]) -> dict[str, dict[date, str 
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT ticker_id::text, time::date, wyckoff_regime
-            FROM daily_snapshots
-            WHERE ticker_id = ANY(%s)
-            ORDER BY ticker_id::text, time ASC
+            WITH ranked AS (
+                SELECT DISTINCT ON (ticker_id, (time AT TIME ZONE 'America/New_York')::date)
+                    ticker_id::text,
+                    (time AT TIME ZONE 'America/New_York')::date AS ny_date,
+                    wyckoff_regime,
+                    CASE
+                        WHEN (time AT TIME ZONE 'UTC')::time = '23:59:59.999999'::time THEN 0
+                        ELSE 1
+                    END AS precedence,
+                    time
+                FROM daily_snapshots
+                WHERE ticker_id = ANY(%s::uuid[])
+                ORDER BY
+                    ticker_id,
+                    (time AT TIME ZONE 'America/New_York')::date,
+                    precedence,
+                    CASE WHEN wyckoff_regime IS NULL THEN 1 ELSE 0 END,
+                    time DESC
+            )
+            SELECT ticker_id, ny_date, wyckoff_regime
+            FROM ranked
+            ORDER BY ticker_id, ny_date ASC
             """,
             (ticker_ids,),
         )
@@ -153,6 +218,7 @@ def test_b1_all_ticker_execution_path() -> None:
     snapshot_date = date(2025, 12, 1)
     next_date = date(2025, 12, 2)
 
+    os.environ["DATABASE_URL"] = db_url
     with psycopg2.connect(db_url) as conn:
         ticker_a = _insert_ticker(conn, "AAPL")
         ticker_b = _insert_ticker(conn, "MSFT")
@@ -253,6 +319,28 @@ def test_b1_non_regime_events_default_unknown() -> None:
 
 @pytest.mark.integration
 @pytest.mark.db
+def test_b1_prefers_canonical_snapshot_row_when_duplicate_ny_day_rows_exist() -> None:
+    db_url = _test_db_url()
+    if not db_url:
+        pytest.skip("KAPMAN_TEST_DATABASE_URL is not set")
+
+    reset_and_migrate(db_url, default_migrations_dir())
+    snapshot_date = date(2025, 12, 11)
+
+    with psycopg2.connect(db_url) as conn:
+        ticker_a = _insert_ticker(conn, "AAPL")
+        _seed_ohlcv(conn, ticker_id=ticker_a, snapshot_date=snapshot_date)
+        _seed_events(conn, ticker_id=ticker_a, snapshot_date=snapshot_date, events=["SOS"], primary_event="SOS")
+        _seed_duplicate_split_snapshot(conn, ticker_id=ticker_a, snapshot_date=snapshot_date)
+
+        run_wyckoff_regime_job(conn)
+
+        regimes = _fetch_regimes(conn, ticker_a)
+        assert regimes[snapshot_date] == REGIME_MARKUP
+
+
+@pytest.mark.integration
+@pytest.mark.db
 def test_b1_parallel_correctness_parity_and_determinism() -> None:
     db_url = _test_db_url()
     if not db_url:
@@ -263,6 +351,7 @@ def test_b1_parallel_correctness_parity_and_determinism() -> None:
     d2 = date(2025, 12, 7)
     d3 = date(2025, 12, 8)
 
+    os.environ["DATABASE_URL"] = db_url
     with psycopg2.connect(db_url) as conn:
         ticker_a = _insert_ticker(conn, "AAPL")
         ticker_b = _insert_ticker(conn, "MSFT")
@@ -304,6 +393,7 @@ def test_b1_parallel_worker_boundaries() -> None:
     reset_and_migrate(db_url, default_migrations_dir())
     snapshot_date = date(2025, 12, 9)
 
+    os.environ["DATABASE_URL"] = db_url
     with psycopg2.connect(db_url) as conn:
         ticker_a = _insert_ticker(conn, "AAPL")
         _seed_ohlcv(conn, ticker_id=ticker_a, snapshot_date=snapshot_date)
@@ -317,6 +407,7 @@ def test_b1_parallel_worker_boundaries() -> None:
     reset_and_migrate(db_url, default_migrations_dir())
     snapshot_date = date(2025, 12, 10)
 
+    os.environ["DATABASE_URL"] = db_url
     with psycopg2.connect(db_url) as conn:
         ticker_a = _insert_ticker(conn, "AAPL")
         ticker_b = _insert_ticker(conn, "MSFT")

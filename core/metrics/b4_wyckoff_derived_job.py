@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, Optional, Sequence
 
 from psycopg2.extras import Json, execute_values
 
+from core.daily_snapshots import CANONICAL_DAILY_SNAPSHOT_UTC_TIME
 from core.metrics.b1_wyckoff_regime_job import (
     REGIME_ACCUMULATION,
     REGIME_DISTRIBUTION,
@@ -159,13 +160,13 @@ def _fetch_daily_regimes(
     end_date: Optional[date],
 ) -> list[tuple[date, Optional[str]]]:
     if start_date and end_date:
-        where_clause = "time::date >= %s AND time::date <= %s"
+        where_clause = "ny_date >= %s AND ny_date <= %s"
         params = (ticker_id, start_date, end_date)
     elif start_date:
-        where_clause = "time::date >= %s"
+        where_clause = "ny_date >= %s"
         params = (ticker_id, start_date)
     elif end_date:
-        where_clause = "time::date <= %s"
+        where_clause = "ny_date <= %s"
         params = (ticker_id, end_date)
     else:
         where_clause = "TRUE"
@@ -174,12 +175,33 @@ def _fetch_daily_regimes(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT time::date, wyckoff_regime
-            FROM daily_snapshots
-            WHERE ticker_id = %s AND {where_clause}
-            ORDER BY time ASC
+            SELECT ny_date, wyckoff_regime
+            FROM (
+                SELECT DISTINCT ON (ny_date)
+                       ny_date,
+                       wyckoff_regime,
+                       time
+                FROM (
+                    SELECT
+                        (time AT TIME ZONE 'America/New_York')::date AS ny_date,
+                        wyckoff_regime,
+                        time
+                    FROM daily_snapshots
+                    WHERE ticker_id = %s
+                ) ranked
+                WHERE {where_clause}
+                ORDER BY
+                    ny_date ASC,
+                    CASE
+                        WHEN (time AT TIME ZONE 'UTC')::time = %s THEN 0
+                        ELSE 1
+                    END ASC,
+                    CASE WHEN wyckoff_regime IS NULL THEN 1 ELSE 0 END ASC,
+                    time DESC
+            ) deduped
+            ORDER BY ny_date ASC
             """,
-            params,
+            params + (CANONICAL_DAILY_SNAPSHOT_UTC_TIME,),
         )
         rows = cur.fetchall()
     return [(row[0], row[1]) for row in rows]

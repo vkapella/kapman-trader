@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-from zoneinfo import ZoneInfo
 
 from psycopg2.extras import Json
 
+from core.daily_snapshots import canonical_daily_snapshot_time
 from core.metrics.dealer_metrics_calc import (
     DEFAULT_GEX_SLOPE_RANGE_PCT,
     DEFAULT_MAX_MONEYNESS,
@@ -131,18 +131,7 @@ def classify_dealer_status(
 
 
 def _snapshot_time_utc(snapshot_date: date) -> datetime:
-    ny_tz = ZoneInfo("America/New_York")
-    local = datetime(
-        year=snapshot_date.year,
-        month=snapshot_date.month,
-        day=snapshot_date.day,
-        hour=23,
-        minute=59,
-        second=59,
-        microsecond=999999,
-        tzinfo=ny_tz,
-    )
-    return local.astimezone(timezone.utc)
+    return canonical_daily_snapshot_time(snapshot_date)
 
 
 def resolve_effective_options_time(conn, ticker_id: str, snapshot_time: datetime) -> Optional[datetime]:
