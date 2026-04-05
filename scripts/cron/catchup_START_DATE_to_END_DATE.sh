@@ -18,8 +18,8 @@ set -euo pipefail
 #   A3  Dealer Metrics
 #   B2  Wyckoff Structural Events
 #   B1  Wyckoff Regime
-#   B4.1 Canonical Sequences
 #   B4  Wyckoff Derived
+#   B4.1 Canonical Sequences
 #
 # GUARANTEES:
 # - OHLCV anchors all dates
@@ -141,18 +141,18 @@ run_step "B1" "STEP 7: WYCKOFF REGIME" \
   python -m scripts.run_b1_wyckoff_regime \
     --heartbeat
 
-run_step "B4.1" "STEP 8: WYCKOFF SEQUENCES" \
-  python -m scripts.run_b4_1_wyckoff_sequences \
-    --start-date "${START_DATE}" \
-    --end-date "${END_DATE}" \
-    --heartbeat
-
-run_step "B4" "STEP 9: WYCKOFF DERIVED" \
+run_step "B4" "STEP 8: WYCKOFF DERIVED" \
   python -m scripts.run_b4_wyckoff_derived \
     --start-date "${START_DATE}" \
     --end-date "${END_DATE}" \
     --heartbeat \
     --include-evidence
+
+run_step "B4.1" "STEP 9: WYCKOFF SEQUENCES" \
+  python -m scripts.run_b4_1_wyckoff_sequences \
+    --start-date "${START_DATE}" \
+    --end-date "${END_DATE}" \
+    --heartbeat
 
 run_step "CHECK" "POSTCHECK: DEALER SNAPSHOT DATE SAFETY" \
   docker exec -i -e PGPASSWORD="${PGPASSWORD:-kapman_password_here}" kapman-db \
