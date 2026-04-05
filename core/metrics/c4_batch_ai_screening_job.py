@@ -27,6 +27,7 @@ from core.providers.ai.prompt_loader import load_prompt, load_schema
 logger = logging.getLogger("kapman.c4")
 
 ALLOWED_PROVIDERS = {"anthropic", "openai"}
+CANONICAL_B41_SEQUENCE_IDS = ("ACCUMULATION_BREAKOUT", "DISTRIBUTION_BREAKDOWN")
 
 DEFAULT_BATCH_SIZE = 5
 DEFAULT_BATCH_WAIT_SECONDS = 1.0
@@ -254,10 +255,12 @@ def _load_wyckoff_sequences(conn, *, ticker_id: str, snapshot_date: date) -> lis
             """
             SELECT sequence_id, start_date, completion_date, events_in_sequence
             FROM wyckoff_sequences
-            WHERE ticker_id = %s AND completion_date <= %s
+            WHERE ticker_id = %s
+              AND completion_date <= %s
+              AND sequence_id = ANY(%s)
             ORDER BY completion_date ASC, sequence_id ASC
             """,
-            (ticker_id, snapshot_date),
+            (ticker_id, snapshot_date, list(CANONICAL_B41_SEQUENCE_IDS)),
         )
         rows = cur.fetchall()
     sequences = []
@@ -281,10 +284,12 @@ def _load_wyckoff_sequence_events(
             """
             SELECT sequence_id, completion_date, event_type, event_date, event_role, event_order
             FROM wyckoff_sequence_events
-            WHERE ticker_id = %s AND completion_date <= %s
+            WHERE ticker_id = %s
+              AND completion_date <= %s
+              AND sequence_id = ANY(%s)
             ORDER BY completion_date ASC, event_order ASC
             """,
-            (ticker_id, snapshot_date),
+            (ticker_id, snapshot_date, list(CANONICAL_B41_SEQUENCE_IDS)),
         )
         rows = cur.fetchall()
     events = []

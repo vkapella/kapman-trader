@@ -21,7 +21,7 @@ Capture implemented pipeline phase ordering, dependency gates, and sequencing co
 | Script | Implemented Order |
 |---|---|
 | `scripts/cron/kapman_daily_run.sh` | A1 watchlist -> A0 OHLCV -> A1 options -> A2 -> A4 -> A3 -> B2 -> B1 -> B4 -> B4.1 -> dashboards |
-| `scripts/cron/catchup_START_DATE_to_END_DATE.sh` | A0 -> A1 -> A2 -> A4 -> A3 -> B2 -> B1 -> B4.1 -> B4 |
+| `scripts/cron/catchup_START_DATE_to_END_DATE.sh` | A0 -> A1 -> A2 -> A4 -> A3 -> B2 -> B1 -> B4 -> B4.1 |
 | `scripts/cron/resume-from-A3.sh` | A3 -> B2 -> B1 -> B4 -> B4.1 |
 
 | B2 Dependency Gate | Rule |
@@ -53,12 +53,12 @@ SOURCE_LINE: 13-23, 53-142
 CATEGORY: Strategy  
 RULE_TYPE: Conditional  
 CONFIDENCE: STRONG  
-DESCRIPTION: Catch-up orchestration runs B4.1 before B4.
+DESCRIPTION: Catch-up orchestration runs B4 before B4.1.
 LOGIC:
 - IF: Running catch-up script
-- THEN: Execute B4.1 sequence generation before B4 derived aggregation
+- THEN: Execute B4 derived aggregation before B4.1 sequence generation
 - THRESHOLD: Fixed script order
-CONTEXT: Introduces order divergence versus daily run path.
+CONTEXT: Matches the daily and resume execution paths.
 
 ### RULE PIPELINE_003
 RULE_ID: PIPELINE_003  
@@ -72,7 +72,7 @@ LOGIC:
 - IF: Resuming pipeline from A3
 - THEN: Run A3 -> B2 -> B1 -> B4 -> B4.1
 - THRESHOLD: Fixed script order
-CONTEXT: Matches daily-run B4-before-B4.1 ordering, unlike catch-up script.
+CONTEXT: Matches daily-run B4-before-B4.1 ordering.
 
 ### RULE PIPELINE_004
 RULE_ID: PIPELINE_004  
@@ -156,14 +156,12 @@ SOURCE_LINE: 159-175; 126-142; 29-44
 CATEGORY: Strategy  
 RULE_TYPE: Classification  
 CONFIDENCE: STRONG  
-DESCRIPTION: B4/B4.1 ordering is inconsistent across scripts.
+DESCRIPTION: B4/B4.1 ordering is consistent across scripts.
 LOGIC:
-- IF: Daily or resume script
+- IF: Running any supported orchestration script
 - THEN: B4 runs before B4.1
-- IF: Catch-up script
-- THEN: B4.1 runs before B4
 - THRESHOLD: N/A
-CONTEXT: Operational inconsistency can change timing of derived vs canonical sequence availability.
+CONTEXT: Canonical sequences always evaluate after derived transition facts are available.
 
 ---
 ### RULE PIPELINE_010

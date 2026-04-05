@@ -25,6 +25,17 @@ logger = logging.getLogger("kapman.b4_1")
 TERMINAL_EVENT_SOS = "SOS"
 TERMINAL_EVENT_SOW = "SOW"
 
+CANONICAL_EVENT_TYPES = (
+    "SC",
+    "AR",
+    "SPRING",
+    "BC",
+    "AR_TOP",
+    "UT",
+    TERMINAL_EVENT_SOS,
+    TERMINAL_EVENT_SOW,
+)
+
 SEQUENCE_TYPE_ACCUM_BREAKOUT = "ACCUMULATION_BREAKOUT"
 SEQUENCE_TYPE_DISTRIBUTION_BREAKDOWN = "DISTRIBUTION_BREAKDOWN"
 
@@ -70,7 +81,9 @@ class SequenceRecord:
     start_date: date
     terminal_date: date
     prior_regime: str
+    post_terminal_regime: Optional[str]
     confidence: float
+    supporting_event_count: int
     invalidated: bool
     invalidated_reason: Optional[str]
     events: tuple[SequenceEvent, ...]
@@ -166,14 +179,8 @@ def _fetch_structural_events(
     start_date: Optional[date],
     end_date: Optional[date],
 ) -> list[StructuralEvent]:
-    if start_date and end_date:
-        where_clause = "ds.time::date >= %s AND ds.time::date <= %s"
-        params = (ticker_id, start_date, end_date)
-    elif start_date:
-        where_clause = "ds.time::date >= %s"
-        params = (ticker_id, start_date)
-    elif end_date:
-        where_clause = "ds.time::date <= %s"
+    if end_date:
+        where_clause = "(ds.time AT TIME ZONE 'America/New_York')::date <= %s"
         params = (ticker_id, end_date)
     else:
         where_clause = "TRUE"
@@ -182,15 +189,17 @@ def _fetch_structural_events(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT ds.time::date, ev.event_code
+            SELECT DISTINCT
+                   (ds.time AT TIME ZONE 'America/New_York')::date AS ny_date,
+                   UPPER(ev.event_code)
             FROM public.daily_snapshots ds
             CROSS JOIN LATERAL unnest(ds.events_detected) AS ev(event_code)
             WHERE ds.ticker_id = %s
               AND {where_clause}
-              AND ev.event_code IN ('SOS', 'SOW')
-            ORDER BY ds.time::date ASC, ev.event_code ASC
+              AND UPPER(ev.event_code) = ANY(%s)
+            ORDER BY ny_date ASC, UPPER(ev.event_code) ASC
             """,
-            params,
+            params + (list(CANONICAL_EVENT_TYPES),),
         )
         rows = cur.fetchall()
 
@@ -210,14 +219,10 @@ def _fetch_daily_regimes(
     start_date: Optional[date],
     end_date: Optional[date],
 ) -> list[tuple[date, Optional[str], Optional[float]]]:
-    if start_date and end_date:
-        where_clause = "time::date >= %s AND time::date <= %s"
-        params = (ticker_id, start_date, end_date)
-    elif start_date:
-        where_clause = "time::date >= %s"
-        params = (ticker_id, start_date)
-    elif end_date:
-        where_clause = "time::date <= %s"
+    # Intentionally load historical context before start_date so terminal eligibility
+    # can be evaluated against the immediately prior persisted regime.
+    if end_date:
+        where_clause = "ny_date <= %s"
         params = (ticker_id, end_date)
     else:
         where_clause = "TRUE"
@@ -226,10 +231,29 @@ def _fetch_daily_regimes(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT time::date, wyckoff_regime, wyckoff_regime_confidence
-            FROM public.daily_snapshots
-            WHERE ticker_id = %s AND {where_clause}
-            ORDER BY time ASC
+            SELECT ny_date, wyckoff_regime, wyckoff_regime_confidence
+            FROM (
+                SELECT DISTINCT ON (ny_date)
+                       ny_date,
+                       wyckoff_regime,
+                       wyckoff_regime_confidence,
+                       time
+                FROM (
+                    SELECT
+                        (time AT TIME ZONE 'America/New_York')::date AS ny_date,
+                        wyckoff_regime,
+                        wyckoff_regime_confidence,
+                        time
+                    FROM public.daily_snapshots
+                    WHERE ticker_id = %s
+                ) ranked
+                WHERE {where_clause}
+                ORDER BY
+                    ny_date ASC,
+                    CASE WHEN wyckoff_regime IS NULL THEN 1 ELSE 0 END ASC,
+                    time DESC
+            ) deduped
+            ORDER BY ny_date ASC
             """,
             params,
         )
@@ -244,13 +268,7 @@ def _fetch_regime_transitions(
     start_date: Optional[date],
     end_date: Optional[date],
 ) -> list[dict[str, Any]]:
-    if start_date and end_date:
-        where_clause = "date >= %s AND date <= %s"
-        params = (ticker_id, start_date, end_date)
-    elif start_date:
-        where_clause = "date >= %s"
-        params = (ticker_id, start_date)
-    elif end_date:
+    if end_date:
         where_clause = "date <= %s"
         params = (ticker_id, end_date)
     else:
@@ -289,6 +307,17 @@ def _regime_by_date(
     for snapshot_date, regime, _confidence in snapshot_rows:
         regimes[snapshot_date] = _normalize_regime(regime)
     return regimes
+
+
+def _entry_regime_by_date(
+    snapshot_rows: Sequence[tuple[date, Optional[str], Optional[float]]]
+) -> dict[date, Optional[str]]:
+    entry_regimes: dict[date, Optional[str]] = {}
+    prior_regime: Optional[str] = None
+    for snapshot_date, regime, _confidence in snapshot_rows:
+        entry_regimes[snapshot_date] = prior_regime
+        prior_regime = _normalize_regime(regime)
+    return entry_regimes
 
 
 def _find_latest_event(
@@ -335,7 +364,8 @@ def _invalidation_reason(
         new_regime = transition.get("new_regime")
         if not transition_date or not new_regime:
             continue
-        if transition_date < start_date or transition_date > terminal_date:
+        # A terminal-day transition is the expected sequence resolution, not an invalidation.
+        if transition_date < start_date or transition_date >= terminal_date:
             continue
         if new_regime in invalid_regimes:
             return f"transition_to_{new_regime}_on_{transition_date.isoformat()}"
@@ -353,7 +383,10 @@ def _sequence_payload(sequence: SequenceRecord) -> dict[str, Any]:
         "sequence_type": sequence.sequence_type,
         "terminal_event": sequence.terminal_event,
         "prior_regime": sequence.prior_regime,
+        "entry_regime": sequence.prior_regime,
+        "post_terminal_regime": sequence.post_terminal_regime,
         "confidence": sequence.confidence,
+        "supporting_event_count": sequence.supporting_event_count,
         "invalidated": sequence.invalidated,
         "invalidated_reason": sequence.invalidated_reason,
         "events": [
@@ -370,7 +403,6 @@ def _sequence_payload(sequence: SequenceRecord) -> dict[str, Any]:
 
 def _assert_required_tables(conn) -> None:
     required = {
-        "daily_snapshots",
         "daily_snapshots",
         "wyckoff_regime_transitions",
         "wyckoff_sequences",
@@ -395,8 +427,11 @@ def _assert_required_tables(conn) -> None:
 def _derive_sequences_for_events(
     *,
     events: Sequence[StructuralEvent],
-    regimes_by_date: dict[date, Optional[str]],
+    entry_regimes_by_date: dict[date, Optional[str]],
+    post_terminal_regimes_by_date: dict[date, Optional[str]],
     transitions: Sequence[dict[str, Any]],
+    terminal_start_date: Optional[date],
+    terminal_end_date: Optional[date],
 ) -> list[SequenceRecord]:
     ordered_events = sorted(events, key=lambda ev: (ev.event_date, ev.event_type))
     sequences: list[SequenceRecord] = []
@@ -405,8 +440,13 @@ def _derive_sequences_for_events(
         if terminal.event_type not in (TERMINAL_EVENT_SOS, TERMINAL_EVENT_SOW):
             continue
 
-        prior_regime = regimes_by_date.get(terminal.event_date)
-        if prior_regime not in ELIGIBLE_REGIMES.get(terminal.event_type, set()):
+        if terminal_start_date and terminal.event_date < terminal_start_date:
+            continue
+        if terminal_end_date and terminal.event_date > terminal_end_date:
+            continue
+
+        entry_regime = entry_regimes_by_date.get(terminal.event_date)
+        if entry_regime not in ELIGIBLE_REGIMES.get(terminal.event_type, set()):
             continue
 
         supporting_types = SUPPORTING_EVENTS.get(terminal.event_type, [])
@@ -424,6 +464,7 @@ def _derive_sequences_for_events(
         )
         invalidated = reason is not None
         confidence = _compute_confidence(len(supporting))
+        post_terminal_regime = post_terminal_regimes_by_date.get(terminal.event_date)
 
         sequence_events: list[SequenceEvent] = []
         order = 1
@@ -452,8 +493,10 @@ def _derive_sequences_for_events(
                 terminal_event=terminal.event_type,
                 start_date=start_date,
                 terminal_date=terminal.event_date,
-                prior_regime=prior_regime,
+                prior_regime=entry_regime,
+                post_terminal_regime=post_terminal_regime,
                 confidence=confidence,
+                supporting_event_count=len(supporting),
                 invalidated=invalidated,
                 invalidated_reason=reason,
                 events=tuple(sequence_events),
@@ -530,33 +573,44 @@ def run_b4_1_wyckoff_sequences_job(
                 end_date=end_date,
             )
 
-            regimes_by_date = _regime_by_date(snapshot_rows)
-            terminal_events = [ev for ev in events if ev.event_type in (TERMINAL_EVENT_SOS, TERMINAL_EVENT_SOW)]
+            entry_regimes_by_date = _entry_regime_by_date(snapshot_rows)
+            post_terminal_regimes_by_date = _regime_by_date(snapshot_rows)
+            terminal_events = [
+                ev
+                for ev in events
+                if ev.event_type in (TERMINAL_EVENT_SOS, TERMINAL_EVENT_SOW)
+                and (start_date is None or ev.event_date >= start_date)
+                and (end_date is None or ev.event_date <= end_date)
+            ]
             for terminal in terminal_events:
-                prior_regime = regimes_by_date.get(terminal.event_date)
-                if prior_regime is None:
+                entry_regime = entry_regimes_by_date.get(terminal.event_date)
+                if entry_regime is None:
                     stats.sequences_skipped += 1
                     log.info(
-                        "[B4.1] Missing regime at terminal date; skipping ticker=%s terminal_date=%s",
+                        "[B4.1] Missing pre-terminal regime; skipping ticker=%s terminal_date=%s",
                         ticker_id,
                         terminal.event_date.isoformat(),
                     )
                     continue
                 eligible = ELIGIBLE_REGIMES.get(terminal.event_type, set())
-                if prior_regime not in eligible:
+                if entry_regime not in eligible:
                     stats.sequences_skipped += 1
                     log.debug(
-                        "[B4.1] Regime mismatch; skipping ticker=%s terminal_date=%s terminal_event=%s prior_regime=%s",
+                        "[B4.1] Regime mismatch; skipping ticker=%s terminal_date=%s terminal_event=%s entry_regime=%s post_terminal_regime=%s",
                         ticker_id,
                         terminal.event_date.isoformat(),
                         terminal.event_type,
-                        prior_regime,
+                        entry_regime,
+                        post_terminal_regimes_by_date.get(terminal.event_date),
                     )
 
             sequences = _derive_sequences_for_events(
                 events=events,
-                regimes_by_date=regimes_by_date,
+                entry_regimes_by_date=entry_regimes_by_date,
+                post_terminal_regimes_by_date=post_terminal_regimes_by_date,
                 transitions=transitions,
+                terminal_start_date=start_date,
+                terminal_end_date=end_date,
             )
 
             for sequence in sequences:
