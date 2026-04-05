@@ -9,12 +9,13 @@ source .env
 set +a
 
 ## Start/Stop Docker Env
+
 docker compose up -d
 docker compose down
 
-## DATABASE ACCESS
+## Database Access
 
-docker exec -it kapman-db psql -U kapman -d kapman 
+docker exec -it kapman-db psql -U kapman -d kapman
 
 ---
 ## Deterministic Rebuild
@@ -22,13 +23,16 @@ docker exec -it kapman-db psql -U kapman -d kapman
 A5 deterministic DB rebuild orchestrator (reuses A6 wipe-and-migrate).
 
 python -m scripts.db.a5_deterministic_rebuild
-                                                                                                                 
-usage: a5_deterministic_rebuild.py [-h] [--iterations ITERATIONS] [--print-migrations]
+python -m scripts.db.a5_deterministic_rebuild --iterations 3
+python -m scripts.db.a5_deterministic_rebuild --print-migrations
 
-optional arguments:
-  -h, --help            #show this help message and exit
-  --iterations ITERATIONS #Number of rebuild iterations (default: env KAPMAN_REBUILD_ITERATIONS or 1).
-  --print-migrations    #Print migrations in deterministic apply order and exit.
+Usage:
+
+python -m scripts.db.a5_deterministic_rebuild [--iterations ITERATIONS] [--print-migrations]
+
+Supported arguments:
+- --iterations ITERATIONS: Number of rebuild iterations. Defaults to KAPMAN_REBUILD_ITERATIONS or 1.
+- --print-migrations: Print migrations in deterministic apply order and exit.
 
 ---
 ## Ingest Tickers
@@ -37,333 +41,381 @@ Bootstrap the full ticker universe from Polygon Reference API.
 
 python -m scripts.ingest_tickers
 python -m scripts.ingest_tickers --force
+python -m scripts.ingest_tickers --db-url postgresql://...
 
-usage: ingest_tickers.py [-h] [--db-url DB_URL] [--force]
+Usage:
 
-optional arguments:
-  -h, --help            # show this help message and exit
-  --db-url DB_URL       # Overrides DATABASE_URL (default: env DATABASE_URL)
-  --force               # Force re-ingest even if tickers already exist
+python -m scripts.ingest_tickers [--db-url DB_URL] [--force]
+
+Supported arguments:
+- --db-url DB_URL: Override DATABASE_URL.
+- --force: Re-fetch and upsert even if tickers is non-empty.
 
 ## Ingest Tickers Dashboard
 
-docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0002-A1.1-tickers_and_watchlists_dashboard.sql
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db \
+  psql -U kapman -d kapman < db/dashboards/0002-A1.1-tickers_and_watchlists_dashboard.sql
 
 ---
-
 ## Ingest Watchlists
 
 Persist deterministic MVP watchlists (A7). Reads data/watchlists/*.txt and reconciles into public.watchlists.
 
 python -m scripts.ingest_watchlists
+python -m scripts.ingest_watchlists --effective-date 2026-04-05
+python -m scripts.ingest_watchlists --db-url postgresql://...
 
-usage: ingest_watchlists.py [-h] [--db-url DB_URL] [--effective-date EFFECTIVE_DATE]
+Usage:
 
-optional arguments:
-  -h, --help            # show this help message and exit
-  --db-url DB_URL       # Overrides DATABASE_URL (default: env DATABASE_URL)
-  --effective-date EFFECTIVE_DATE # Effective date (YYYY-MM-DD) applied during reconciliation (default: today)
+python -m scripts.ingest_watchlists [--db-url DB_URL] [--effective-date EFFECTIVE_DATE]
 
+Supported arguments:
+- --db-url DB_URL: Override DATABASE_URL.
+- --effective-date EFFECTIVE_DATE: Effective date in YYYY-MM-DD. Defaults to today.
 
 ## Ingest Watchlists Dashboard
 
-docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0002-A1.1-tickers_and_watchlists_dashboard.sql
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db \
+  psql -U kapman -d kapman < db/dashboards/0002-A1.1-tickers_and_watchlists_dashboard.sql
 
 ---
-
 ## Ingest OHLCV
 
 Canonical OHLCV ingestion pipeline (A0). Reads Polygon S3 flat files and upserts into public.ohlcv.
 
-python -m scripts.ingest_ohlcv
-python -m scripts.ingest_ohlcv base --days 1 --as-of <yesterdays date> #loads 1 day through yesterday
+Top-level usage:
 
-usage: ingest_ohlcv.py [-h] [--db-url DB_URL] {base,incremental,backfill} ...
+python -m scripts.ingest_ohlcv [--db-url DB_URL] {base,incremental,backfill} ...
 
-Canonical OHLCV ingestion pipeline (A0). Reads Polygon S3 flat files and upserts into public.ohlcv.
+Examples:
 
-positional arguments:
-  {base,incremental,backfill}
-    base                Full-universe base load (last N available trading days)
-    incremental         Incremental daily ingestion (skips unknown symbols by default)
-    backfill            Bounded historical backfill (skips unknown symbols by default)
+python -m scripts.ingest_ohlcv base --days 1 --as-of 2026-04-04
+python -m scripts.ingest_ohlcv incremental --date 2026-04-04
+python -m scripts.ingest_ohlcv backfill --start 2026-04-01 --end 2026-04-04
 
-optional arguments:
-  -h, --help            show this help message and exit
-  --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
+Common arguments for all subcommands:
+- --db-url DB_URL: Override DATABASE_URL.
+- --verbosity {quiet,normal,debug}: Output mode.
+- --max-symbol-sample MAX_SYMBOL_SAMPLE: Max sample size in debug output.
+- --symbols SYMBOLS: Comma-separated symbol subset.
+- --strict-missing-symbols: Fail if flatfiles contain symbols missing from tickers.
+- --no-ticker-bootstrap: Disable automatic ticker bootstrap if tickers is empty.
 
-* base *
-usage: ingest_ohlcv.py base [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] [--no-ticker-bootstrap] [--days DAYS] [--as-of AS_OF]
+### base
 
-optional arguments:
-  -h, --help            show this help message and exit
-  --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
-  --verbosity {quiet,normal,debug} #Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
-  --max-symbol-sample MAX_SYMBOL_SAMPLE #Max symbols to show when samples are printed (debug only; default: 10)
-  --symbols SYMBOLS     Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
-  --strict-missing-symbols Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
-  --no-ticker-bootstrapDisable automatic ticker bootstrapping; if tickers is empty, fail as-is
-  --days DAYS           Number of available daily files to ingest (default: OHLCV_HISTORY_DAYS or 730)
-  --as-of AS_OF         Latest date to consider (default: yesterday)
-* backfill *
+python -m scripts.ingest_ohlcv base [--db-url DB_URL] [--verbosity {quiet,normal,debug}] \
+  [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] \
+  [--no-ticker-bootstrap] [--days DAYS] [--as-of AS_OF]
 
-usage: ingest_ohlcv.py backfill [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] [--no-ticker-bootstrap] --start START --end END
+Additional arguments:
+- --days DAYS: Number of available daily files to ingest. Defaults to OHLCV_HISTORY_DAYS or 730.
+- --as-of AS_OF: Latest date to consider. Defaults to yesterday.
 
-optional arguments:
-  -h, --help            show this help message and exit
-  --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
-  --verbosity {quiet,normal,debug} #Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
-  --max-symbol-sample MAX_SYMBOL_SAMPLE #Max symbols to show when samples are printed (debug only; default: 10)
-  --symbols SYMBOLS     Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
-  --strict-missing-symbols #Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
-  --no-ticker-bootstrap #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
-  --start START         Start date (YYYY-MM-DD)
-  --end END             End date (YYYY-MM-DD)
+### incremental
 
-* incremental *
-usage: ingest_ohlcv.py incremental [-h] [--db-url DB_URL] [--verbosity {quiet,normal,debug}] [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols]
-[--no-ticker-bootstrap] [--date DATE] [--start START] [--end END]
+python -m scripts.ingest_ohlcv incremental [--db-url DB_URL] [--verbosity {quiet,normal,debug}] \
+  [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] \
+  [--no-ticker-bootstrap] [--date DATE] [--start START] [--end END]
 
-optional arguments:
-  -h, --help            show this help message and exit
-  --db-url DB_URL       Overrides DATABASE_URL (default: env DATABASE_URL)
-  --verbosity {quiet,normal,debug} #Output mode: quiet (summary only), normal (heartbeat), debug (per-date + samples)
-  --max-symbol-sample MAX_SYMBOL_SAMPLE #Max symbols to show when samples are printed (debug only; default: 10)
-  --symbols SYMBOLS     Comma-separated symbol subset (NON-AUTHORITATIVE; default: full universe from tickers table)
-  --strict-missing-symbols #Fail ingestion if Polygon flatfiles contain symbols missing from the tickers table. By default, all modes skip unknown symbols (recommended for curated universes).
-  --no-ticker-bootstrap #Disable automatic ticker bootstrapping; if tickers is empty, fail as-is
-  --date DATE           Single date (YYYY-MM-DD)
-  --start START         Start date (YYYY-MM-DD)
-  --end END             End date (YYYY-MM-DD)
-(venv) vkapella@Mac-Studio kapman-trader %   
+Additional arguments:
+- --date DATE: Single date in YYYY-MM-DD.
+- --start START: Start date in YYYY-MM-DD.
+- --end END: End date in YYYY-MM-DD.
+
+### backfill
+
+python -m scripts.ingest_ohlcv backfill [--db-url DB_URL] [--verbosity {quiet,normal,debug}] \
+  [--max-symbol-sample MAX_SYMBOL_SAMPLE] [--symbols SYMBOLS] [--strict-missing-symbols] \
+  [--no-ticker-bootstrap] --start START --end END
+
+Required arguments:
+- --start START: Start date in YYYY-MM-DD.
+- --end END: End date in YYYY-MM-DD.
 
 ## Ingest OHLCV Dashboard
 
-docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0000-A0-ohlcv_dashboard.sql
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db \
+  psql -U kapman -d kapman < db/dashboards/0000-A0-ohlcv_dashboard.sql
 
 ---
-
 ## Options Chain Ingestion
 
 A1 options chain ingestion (watchlists -> options_chains). Reads active symbols from public.watchlists, fetches options snapshots from the selected provider, and upserts into public.options_chains.
 
 python -m scripts.ingest_options
-python -m scripts.ingest_options --symbols AVGO --concurrency 1 #avoid overruning rate limits    
+python -m scripts.ingest_options --as-of 2026-04-04
+python -m scripts.ingest_options --symbols AVGO --concurrency 1
+python -m scripts.ingest_options --start-date 2026-04-01 --end-date 2026-04-04 --provider polygon
 
-usage: ingest_options.py [-h] [--db-url DB_URL] [--api-key API_KEY] [--as-of AS_OF] [--snapshot-time SNAPSHOT_TIME] [--start-date START_DATE] [--end-date END_DATE] [--concurrency CONCURRENCY] [--symbols SYMBOLS] [--provider {unicorn,polygon}] [--large-symbols LARGE_SYMBOLS] [--log-level {DEBUG,INFO,WARNING,ERROR}] [--verbose] [--quiet] [--heartbeat HEARTBEAT] [--run-id RUN_ID] [--emit-summary] [--dry-run]
+Usage:
 
-optional arguments:
-  -h, --help                     #show this help message and exit
-  --db-url DB_URL                #Overrides DATABASE_URL (default: env DATABASE_URL)
-  --api-key API_KEY              #Overrides provider API key (default: env POLYGON_API_KEY or UNICORN_API_TOKEN depending on provider)
-  --as-of AS_OF                  #Provider as_of date (YYYY-MM-DD)
-  --snapshot-time SNAPSHOT_TIME  #Snapshot time used for idempotent re-runs (ISO-8601; default: now UTC)
-  --start-date START_DATE        #Start date for range-mode historical ingestion (YYYY-MM-DD)
-  --end-date END_DATE            #End date for range-mode historical ingestion (inclusive, YYYY-MM-DD)
-  --concurrency CONCURRENCY      #Max concurrent symbols (default: 5)
-  --symbols SYMBOLS              #Comma-separated subset of symbols (still intersected with active watchlists)
-  --provider {unicorn,polygon}   #Options provider (override env OPTIONS_PROVIDER; default: unicorn)
-  --large-symbols LARGE_SYMBOLS  #Comma-separated symbols that should be ingested serially (default: AAPL,MSFT,NVDA,TSLA)
-  --log-level {DEBUG,INFO,WARNING,ERROR} #Overrides the default logging level (default: INFO)
-  --verbose                      #Shorthand for --log-level DEBUG
-  --quiet                        #Suppress INFO logs (overrides --log-level unless DEBUG explicitly set)
-  --heartbeat HEARTBEAT          #Emit a heartbeat log every N symbols processed (default: 25)
-  --run-id RUN_ID                #Optional run identifier for observability and tracing
-  --emit-summary                 #Emit a structured INFO summary at the end of the run
-  --dry-run                      #Resolve symbols and scheduling 
+python -m scripts.ingest_options [--db-url DB_URL] [--api-key API_KEY] [--as-of AS_OF] \
+  [--snapshot-time SNAPSHOT_TIME] [--start-date START_DATE] [--end-date END_DATE] \
+  [--concurrency CONCURRENCY] [--symbols SYMBOLS] [--provider {unicorn,polygon}] \
+  [--large-symbols LARGE_SYMBOLS] [--log-level {DEBUG,INFO,WARNING,ERROR}] \
+  [--verbose] [--quiet] [--heartbeat HEARTBEAT] [--run-id RUN_ID] [--emit-summary] [--dry-run]
 
-
+Supported arguments:
+- --db-url DB_URL: Override DATABASE_URL.
+- --api-key API_KEY: Override the provider API key.
+- --as-of AS_OF: Provider as_of date in YYYY-MM-DD.
+- --snapshot-time SNAPSHOT_TIME: Optional snapshot identity in ISO-8601. Normal runs should let this derive from --as-of or the range.
+- --start-date START_DATE: Start date for historical range mode.
+- --end-date END_DATE: Inclusive end date for historical range mode.
+- --concurrency CONCURRENCY: Max concurrent symbols. Default 5.
+- --symbols SYMBOLS: Comma-separated subset. Still intersected with active watchlists.
+- --provider {unicorn,polygon}: Options provider. Defaults to env OPTIONS_PROVIDER or unicorn.
+- --large-symbols LARGE_SYMBOLS: Comma-separated symbols forced to serial ingestion.
+- --log-level {DEBUG,INFO,WARNING,ERROR}: Base log level.
+- --verbose: Shorthand for debug logging.
+- --quiet: Suppress INFO logs unless DEBUG is explicitly set.
+- --heartbeat HEARTBEAT: Emit heartbeat every N symbols. Default 25.
+- --run-id RUN_ID: Optional run identifier.
+- --emit-summary: Emit structured summary at the end.
+- --dry-run: Resolve scheduling without fetching provider data or writing to the DB.
 
 ## Ingest Options Chain Dashboard
 
-docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0001-A1-options_chains_dashboard.sql
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db \
+  psql -U kapman -d kapman < db/dashboards/0001-A1-options_chains_dashboard.sql
+
 ---
+## Compute Local TA + Price Metrics
 
-## COMPUTE LOCAL TA + PRICE METRICS INTO DAILY SNAPSHOTS
-
-KapMan A2: Compute local TA + price metrics into daily_snapshots
+KapMan A2: compute local TA + price metrics into daily_snapshots.
 
 python -m scripts.run_a2_local_ta
-python -m scripts.run_a2_local_ta --date 2025-12-21 
+python -m scripts.run_a2_local_ta --date 2026-04-04
+python -m scripts.run_a2_local_ta --start-date 2026-04-01 --end-date 2026-04-04 --workers 4
+python -m scripts.run_a2_local_ta --fill-missing --quiet
 
-usage: run_a2_local_ta.py [-h] [--db-url DB_URL] [--date DATE] [--start-date START_DATE] [--end-date END_DATE] [--fill-missing] [--verbose] [--debug] [--quiet] [--heartbeat HEARTBEAT] [--enable-pattern-indicators] [--ticker-chunk-size TICKER_CHUNK_SIZE] [--workers WORKERS] [--max-workers MAX_WORKERS]
+Usage:
 
+python -m scripts.run_a2_local_ta [--db-url DB_URL] [--date DATE] [--start-date START_DATE] \
+  [--end-date END_DATE] [--fill-missing] [--verbose] [--debug] [--quiet] \
+  [--heartbeat HEARTBEAT] [--enable-pattern-indicators] \
+  [--ticker-chunk-size TICKER_CHUNK_SIZE] [--workers WORKERS] [--max-workers MAX_WORKERS]
 
-optional arguments:
-  -h, --help                            #show this help message and exit
-  --db-url DB_URL                       #Override DATABASE_URL
-  --date DATE                           #Single trading date (YYYY-MM-DD)
-  --start-date START_DATE               #Start trading date (YYYY-MM-DD)
-  --end-date END_DATE                   #End trading date (YYYY-MM-DD)
-  --fill-missing                        #Only compute rows missing in daily_snapshots
-  --verbose                             #INFO-level per-ticker logging
-  --debug                               #DEBUG-level indicator logging (implies --verbose)
-  --quiet                               #Only warnings + final summary
-  --heartbeat HEARTBEAT                 #Heartbeat every N tickers (default: 50)
-  --enable-pattern-indicators           #Enable TA-Lib candlestick pattern indicators (CDL*)
-  --ticker-chunk-size TICKER_CHUNK_SIZE #Tickers per chunk (default: 500)
-  --workers WORKERS                     #Worker processes (default: auto)
-  --max-workers MAX_WORKERS             #Hard cap on workers (default: 6)
-
-
-
-
-## Compute Dealer Metrics
-
-KapMan A3: Compute dealer metrics into daily_snapshots 
-
-python -m scripts.run_a3_dealer_metrics   
-
-usage: run_a3_dealer_metrics.py [-h] [--db-url DB_URL] [--snapshot-time SNAPSHOT_TIME] [--max-dte-days MAX_DTE_DAYS] [--min-open-interest MIN_OPEN_INTEREST] [--min-volume MIN_VOLUME]
-[--walls-top-n WALLS_TOP_N] [--gex-slope-range-pct GEX_SLOPE_RANGE_PCT] [--max-moneyness MAX_MONEYNESS] [--spot-override SPOT_OVERRIDE] [--log-level {DEBUG,INFO,WARNING}]
-
-
-optional arguments:
-  -h, --help                            #show this help message and exit
-  --db-url DB_URL                       #Override DATABASE_URL
-  --snapshot-time SNAPSHOT_TIME         #Snapshot time (ISO 8601)
-  --max-dte-days MAX_DTE_DAYS           #Max DTE days (default 90)
-  --min-open-interest MIN_OPEN_INTEREST #Min open interest per contract (default 100)
-  --min-volume MIN_VOLUME               #Min volume per contract (default 1)
-  --walls-top-n WALLS_TOP_N             #Number of call/put walls to retain (default 3)
-  --gex-slope-range-pct GEX_SLOPE_RANGE_PCT #Price window percentage for GEX slope (default 0.02)
-  --max-moneyness MAX_MONEYNESS         #Max moneyness fraction for wall eligibility (default 0.2)
-  --spot-override SPOT_OVERRIDE         #Override spot price for all tickers (diagnostics only)
-  --log-level {DEBUG,INFO,WARNING}      #Log level (default INFO)
+Supported arguments:
+- --db-url DB_URL: Override DATABASE_URL.
+- --date DATE: Single trading date.
+- --start-date START_DATE: Start trading date.
+- --end-date END_DATE: End trading date.
+- --fill-missing: Only compute rows missing in daily_snapshots.
+- --verbose: INFO-level per-ticker logging.
+- --debug: DEBUG-level indicator logging. Implies --verbose.
+- --quiet: Only warnings and final summary.
+- --heartbeat HEARTBEAT: Heartbeat every N tickers. Default 50.
+- --enable-pattern-indicators: Enable TA-Lib candlestick pattern indicators (CDL*).
+- --ticker-chunk-size TICKER_CHUNK_SIZE: Tickers per chunk. Default 500.
+- --workers WORKERS: Worker processes. Default auto.
+- --max-workers MAX_WORKERS: Hard cap on workers. Default 6.
 
 ## Daily Snapshot Integrity and Coverage Dashboard
 
-docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0005-A2-daily_snapshot_dashboard.sql
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db \
+  psql -U kapman -d kapman < db/dashboards/0005-A2-daily_snapshot_dashboard.sql
+
+## Compute Dealer Metrics
+
+KapMan A3: compute dealer metrics into daily_snapshots.
+
+python -m scripts.run_a3_dealer_metrics
+python -m scripts.run_a3_dealer_metrics --date 2026-04-04
+python -m scripts.run_a3_dealer_metrics --snapshot-time 2026-04-03T04:59:59.999999+00:00
+python -m scripts.run_a3_dealer_metrics --start-date 2026-04-01 --end-date 2026-04-04 --fill-missing
+
+Usage:
+
+python -m scripts.run_a3_dealer_metrics [--db-url DB_URL] [--date DATE] \
+  [--snapshot-time SNAPSHOT_TIME] [--start-date START_DATE] [--end-date END_DATE] \
+  [--fill-missing] [--verbose] [--debug] [--quiet] \
+  [--log-level {DEBUG,INFO,WARNING,ERROR}] [--heartbeat HEARTBEAT] \
+  [--max-dte-days MAX_DTE_DAYS] [--min-open-interest MIN_OPEN_INTEREST] \
+  [--min-volume MIN_VOLUME] [--walls-top-n WALLS_TOP_N] \
+  [--gex-slope-range-pct GEX_SLOPE_RANGE_PCT] [--max-moneyness MAX_MONEYNESS] \
+  [--spot-override SPOT_OVERRIDE]
+
+Supported arguments:
+- --db-url DB_URL: Override DATABASE_URL.
+- --date DATE: Single trading date.
+- --snapshot-time SNAPSHOT_TIME: Optional legacy snapshot timestamp. The runner normalizes it to the canonical stored daily_snapshots time for its NY trading day.
+- --start-date START_DATE: Start trading date.
+- --end-date END_DATE: End trading date.
+- --fill-missing: Ensure a snapshot exists for every watchlist ticker.
+- --verbose: INFO-level per-ticker logging.
+- --debug: DEBUG-level per-metric detail. Implies --verbose.
+- --quiet: Only warnings and summaries.
+- --log-level {DEBUG,INFO,WARNING,ERROR}: Compatibility override for legacy callers.
+- --heartbeat HEARTBEAT: Heartbeat every N tickers. Default 50.
+- --max-dte-days MAX_DTE_DAYS: Max DTE days. Default 90.
+- --min-open-interest MIN_OPEN_INTEREST: Min open interest per contract. Default 100.
+- --min-volume MIN_VOLUME: Min volume per contract. Default 1.
+- --walls-top-n WALLS_TOP_N: Number of call/put walls to retain. Default 3.
+- --gex-slope-range-pct GEX_SLOPE_RANGE_PCT: Price window percentage for GEX slope. Default 0.02.
+- --max-moneyness MAX_MONEYNESS: Max moneyness fraction for wall eligibility. Default 0.2.
+- --spot-override SPOT_OVERRIDE: Override spot price for diagnostics.
+
+## Daily Snapshot Integrity and Coverage Dashboard
+
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db \
+  psql -U kapman -d kapman < db/dashboards/0005-A2-daily_snapshot_dashboard.sql
 
 ## Compute Volatility Metrics
 
-KapMan A4: Compute volatility metrics into daily_snapshots
+KapMan A4: compute volatility metrics into daily_snapshots.
 
-python -m scripts.run_a4_volatility_metrics    
+python -m scripts.run_a4_volatility_metrics
+python -m scripts.run_a4_volatility_metrics --date 2026-04-04
+python -m scripts.run_a4_volatility_metrics --start-date 2026-04-01 --end-date 2026-04-04 --fill-missing
 
-optional arguments:
-  -h, --help                          #show this help message and exit
-  --db-url DB_URL                     #Override DATABASE_URL
-  --date DATE                         #Single trading date (YYYY-MM-DD)
-  --start-date START_DATE             #Start trading date (YYYY-MM-DD)
-  --end-date END_DATE                 #End trading date (YYYY-MM-DD)
-  --fill-missing                      #Ensure a snapshot exists for every watchlist ticker
-  --verbose                           #INFO-level per-ticker logging
-  --debug                             #DEBUG-level per-metric detail (implies --verbose)
-  --quiet                             #Only warnings + summaries
-  --heartbeat HEARTBEAT               #Heartbeat every N tickers (default: 50)  
+Usage:
+
+python -m scripts.run_a4_volatility_metrics [--db-url DB_URL] [--date DATE] \
+  [--start-date START_DATE] [--end-date END_DATE] [--fill-missing] \
+  [--verbose] [--debug] [--quiet] [--heartbeat HEARTBEAT]
+
+Supported arguments:
+- --db-url DB_URL: Override DATABASE_URL.
+- --date DATE: Single trading date.
+- --start-date START_DATE: Start trading date.
+- --end-date END_DATE: End trading date.
+- --fill-missing: Ensure a snapshot exists for every watchlist ticker.
+- --verbose: INFO-level per-ticker logging.
+- --debug: DEBUG-level per-metric detail. Implies --verbose.
+- --quiet: Only warnings and summaries.
+- --heartbeat HEARTBEAT: Heartbeat every N tickers. Default 50.
 
 ## Compute Wyckoff Structural Events
 
-KapMan B2: Persist canonical Wyckoff structural events into daily_snapshots
+KapMan B2r2: persist canonical Wyckoff structural events into daily_snapshots.
 
-usage: run_b2_wyckoff_structural_events.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat]  
+python -m scripts.run_b2_wyckoff_structural_events
+python -m scripts.run_b2_wyckoff_structural_events --watchlist
+python -m scripts.run_b2_wyckoff_structural_events --symbols AAPL,MSFT --start-date 2026-04-01 --end-date 2026-04-04 --verbose --heartbeat
 
-python -m scripts.run_b2_wyckoff_structural_events --heartbeat  
+Usage:
 
-optional arguments:
-  -h, --help            show this help message and exit
-  --watchlist           Restrict to active watchlist symbols
-  --symbols SYMBOLS     Comma-separated symbols (e.g., AAPL,MSFT)
-  --start-date START_DATEStart date (YYYY-MM-DD)
-  --end-date END_DATE   End date (YYYY-MM-DD)
-  --verbose             Enable step-level logging
-  --heartbeat           Emit periodic progress logs
+python -m scripts.run_b2_wyckoff_structural_events [--watchlist] [--symbols SYMBOLS] \
+  [--start-date START_DATE] [--end-date END_DATE] [--verbose] [--heartbeat]
 
-## ComputeWyckoff Structural Events Dashboard
+Supported arguments:
+- --watchlist: Restrict to active watchlist symbols.
+- --symbols SYMBOLS: Comma-separated symbols.
+- --start-date START_DATE: Start date in YYYY-MM-DD.
+- --end-date END_DATE: End date in YYYY-MM-DD.
+- --verbose: Enable step-level logging.
+- --heartbeat: Emit periodic progress logs.
 
-docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0008-B2-wyckoff_structural_events_dashboard.sql
+## Compute Wyckoff Structural Events Dashboard
 
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db \
+  psql -U kapman -d kapman < db/dashboards/0008-B2-wyckoff_structural_events_dashboard.sql
 
 ## Compute Wyckoff Regime
 
-KapMan B1: Persist daily Wyckoff regime state into daily_snapshots
+KapMan B1: persist daily Wyckoff regime state into daily_snapshots.
 
-usage: run_b1_wyckoff_regime.py [-h] [--watchlist] [--symbols SYMBOLS] [--verbose] [--heartbeat] [--workers WORKERS] [--max-workers MAX_WORKERS]
+python -m scripts.run_b1_wyckoff_regime
+python -m scripts.run_b1_wyckoff_regime --watchlist
+python -m scripts.run_b1_wyckoff_regime --symbols AAPL,MSFT --verbose --workers 4 --max-workers 6
 
-python -m scripts.run_b1_wyckoff_regime --heartbeat  
+Usage:
 
-optional arguments:
-  -h, --help                        #show this help message and exit
-  --watchlist                       #Restrict to active watchlist symbols
-  --symbols SYMBOLS                 #Comma-separated symbols (e.g., AAPL,MSFT)
-  --verbose                         #Enable step-level logging
-  --heartbeat                       #Emit periodic progress logs
-  --workers WORKERS                 #Worker processes (default: auto)
-  --max-workers MAX_WORKERS         #Hard cap on workers (default: 6)    
+python -m scripts.run_b1_wyckoff_regime [--watchlist] [--symbols SYMBOLS] \
+  [--verbose] [--heartbeat] [--workers WORKERS] [--max-workers MAX_WORKERS]
+
+Supported arguments:
+- --watchlist: Restrict to active watchlist symbols.
+- --symbols SYMBOLS: Comma-separated symbols.
+- --verbose: Enable step-level logging.
+- --heartbeat: Emit periodic progress logs.
+- --workers WORKERS: Worker processes. Default auto.
+- --max-workers MAX_WORKERS: Hard cap on workers. Default 6.
 
 ## Create Wyckoff Regime Dashboard
 
-docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman < db/dashboards/0007-B1-wyckoff_regime_dashboard.sql
-
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db \
+  psql -U kapman -d kapman < db/dashboards/0007-B1-wyckoff_regime_dashboard.sql
 
 ## Compute Wyckoff Derived
 
-KapMan B4: Persist derived Wyckoff transitions, sequences, and context events
+KapMan B4: persist derived Wyckoff transitions, sequences, and context events.
 
-python -m scripts.run_b4_wyckoff_derived --help  
-usage: run_b4_wyckoff_derived.py [-h] [--watchlist] [--symbols SYMBOLS] [--start-date START_DATE] [--end-date END_DATE] [--verbose] [--heartbeat] [--include-evidence]
+python -m scripts.run_b4_wyckoff_derived
+python -m scripts.run_b4_wyckoff_derived --watchlist
+python -m scripts.run_b4_wyckoff_derived --symbols AAPL,MSFT --start-date 2026-04-01 --end-date 2026-04-04 --include-evidence
 
-optional arguments:
-  -h, --help              #show this help message and exit
-  --watchlist             #Restrict to active watchlist symbols
-  --symbols SYMBOLS       #Comma-separated symbols (e.g., AAPL,MSFT)
-  --start-date START_DATE #Start date (YYYY-MM-DD)
-  --end-date END_DATE     #End date (YYYY-MM-DD)
-  --verbose               #Enable step-level logging
-  --heartbeat             #Emit periodic progress logs
-  --include-evidence      #Persist per-day snapshot evidence block
+Usage:
+
+python -m scripts.run_b4_wyckoff_derived [--watchlist] [--symbols SYMBOLS] \
+  [--start-date START_DATE] [--end-date END_DATE] [--verbose] [--heartbeat] [--include-evidence]
+
+Supported arguments:
+- --watchlist: Restrict to active watchlist symbols.
+- --symbols SYMBOLS: Comma-separated symbols.
+- --start-date START_DATE: Start date in YYYY-MM-DD.
+- --end-date END_DATE: End date in YYYY-MM-DD.
+- --verbose: Enable step-level logging.
+- --heartbeat: Emit periodic progress logs.
+- --include-evidence: Persist per-day snapshot evidence block.
 
 ## Create Wyckoff Derived Dashboard
 
-
-docker exec -i -e PGPASSWORD=kapman_password_here kapman-db psql -U kapman -d kapman  -v symbol='NVDA'< db/dashboards/0009-B4-wyckoff_derived_dashboard.sql
+docker exec -i -e PGPASSWORD=kapman_password_here kapman-db \
+  psql -v symbol='NVDA' -U kapman -d kapman < db/dashboards/0009-B4-wyckoff_derived_dashboard.sql
 
 ## Compute Wyckoff Sequences
 
-python -m scripts.run_b4_1_wyckoff_sequences --help
+KapMan B4.1: persist canonical Wyckoff sequences (benchmark-validated).
 
-usage: run_b4_1_wyckoff_sequences.py [-h] [--watchlist] [--start-date START_DATE] [--end-date END_DATE] [--verbose] [--heartbeat]
+python -m scripts.run_b4_1_wyckoff_sequences
+python -m scripts.run_b4_1_wyckoff_sequences --watchlist
+python -m scripts.run_b4_1_wyckoff_sequences --start-date 2026-04-01 --end-date 2026-04-04 --verbose --heartbeat
 
-KapMan B4.1: Persist canonical Wyckoff sequences (benchmark-validated)
+Usage:
 
-optional arguments:
-  -h, --help            # show this help message and exit
-  --watchlist           # Restrict to active watchlist symbols
-  --start-date START_DATE# Start date (YYYY-MM-DD)
-  --end-date END_DATE   # End date (YYYY-MM-DD)
-  --verbose             # Enable step-level logging
-  --heartbeat           # Emit periodic progress logs
+python -m scripts.run_b4_1_wyckoff_sequences [--watchlist] [--start-date START_DATE] \
+  [--end-date END_DATE] [--verbose] [--heartbeat]
 
+Supported arguments:
+- --watchlist: Restrict to active watchlist symbols.
+- --start-date START_DATE: Start date in YYYY-MM-DD.
+- --end-date END_DATE: End date in YYYY-MM-DD.
+- --verbose: Enable step-level logging.
+- --heartbeat: Emit periodic progress logs.
 
 ## Produce AI Screening
 
-KapMan C4: Batch AI screening execution
+KapMan C4: batch AI screening execution.
 
-python -m scripts.run_c4_batch_ai_screening --help  
-python -m scripts.run_c4_batch_ai_screening --provider openai --model gpt-5 --dry-run --llm-trace full --llm-trace-dir data/llm --symbols aapl
+python -m scripts.run_c4_batch_ai_screening --provider openai --model gpt-5 --dry-run
+python -m scripts.run_c4_batch_ai_screening --provider openai --model gpt-5 --dry-run --llm-trace full --llm-trace-dir data/llm --symbols AAPL
+python -m scripts.run_c4_batch_ai_screening --provider anthropic --model claude-sonnet --snapshot-time 2026-04-02T23:59:59.999999+00:00
 
-Usage: run_c4_batch_ai_screening.py [-h] [--db-url DB_URL] [--snapshot-time SNAPSHOT_TIME] --provider {anthropic,openai} --model MODEL [--batch-size BATCH_SIZE]
-[--batch-wait-seconds BATCH_WAIT_SECONDS] [--max-retries MAX_RETRIES] [--backoff-base-seconds BACKOFF_BASE_SECONDS] [--dry-run]  [--log-level {DEBUG,INFO,WARNING,ERROR}] [--symbols SYMBOLS] [--llm-trace {off,summary,full}] [--llm-trace-dir LLM_TRACE_DIR]
+Usage:
 
+python -m scripts.run_c4_batch_ai_screening [--db-url DB_URL] [--snapshot-time SNAPSHOT_TIME] \
+  --provider {anthropic,openai} --model MODEL [--batch-size BATCH_SIZE] \
+  [--batch-wait-seconds BATCH_WAIT_SECONDS] [--max-retries MAX_RETRIES] \
+  [--backoff-base-seconds BACKOFF_BASE_SECONDS] [--dry-run] \
+  [--log-level {DEBUG,INFO,WARNING,ERROR}] [--symbols SYMBOLS] \
+  [--llm-trace {off,summary,full}] [--llm-trace-dir LLM_TRACE_DIR]
 
-optional arguments:
-  -h, --help            # show this help message and exit
-  --db-url DB_URL       #Override DATABASE_URL
-  --snapshot-time SNAPSHOT_TIME #Snapshot time (ISO 8601)
-  --provider {anthropic,openai} #Provider (anthropic or openai)
-  --model MODEL         #Model name
-  --batch-size BATCH_SIZE
-  --batch-wait-seconds BATCH_WAIT_SECONDS
-  --max-retries MAX_RETRIES
-  --backoff-base-seconds BACKOFF_BASE_SECONDS
-  --dry-run
-  --log-level {DEBUG,INFO,WARNING,ERROR}
-  --symbols SYMBOLS     #Comma-delimited list of symbols
-  --llm-trace {off,summary,full} #LLM trace level
-  --llm-trace-dir LLM_TRACE_DIR #LLM trace directory
-
-
+Supported arguments:
+- --db-url DB_URL: Override DATABASE_URL.
+- --snapshot-time SNAPSHOT_TIME: Snapshot time in ISO-8601. The runtime resolves screening against the canonical snapshot for the supplied NY trading day.
+- --provider {anthropic,openai}: Required provider.
+- --model MODEL: Required model name.
+- --batch-size BATCH_SIZE: Symbols per batch.
+- --batch-wait-seconds BATCH_WAIT_SECONDS: Pause between batches.
+- --max-retries MAX_RETRIES: Retry cap for provider calls.
+- --backoff-base-seconds BACKOFF_BASE_SECONDS: Base retry backoff.
+- --dry-run: Build batches and context without provider calls.
+- --log-level {DEBUG,INFO,WARNING,ERROR}: Log level.
+- --symbols SYMBOLS: Comma-delimited list of symbols.
+- --llm-trace {off,summary,full}: Trace level.
+- --llm-trace-dir LLM_TRACE_DIR: Trace output directory.
 
 ## Utility to Produce Parquet of OHLCV for Wyckoff_fast_bench testing
 

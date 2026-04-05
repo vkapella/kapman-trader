@@ -13,6 +13,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import psycopg2
 from psycopg2.extras import execute_values
 
+from core.daily_snapshots import CANONICAL_DAILY_SNAPSHOT_UTC_TIME, canonical_daily_snapshot_time
+
 
 DEFAULT_HEARTBEAT_TICKERS = 50
 
@@ -90,16 +92,7 @@ MODEL_VERSION = _resolve_model_version()
 
 
 def _snapshot_time_utc(snapshot_date: date) -> datetime:
-    return datetime(
-        year=snapshot_date.year,
-        month=snapshot_date.month,
-        day=snapshot_date.day,
-        hour=23,
-        minute=59,
-        second=59,
-        microsecond=999999,
-        tzinfo=timezone.utc,
-    )
+    return canonical_daily_snapshot_time(snapshot_date)
 
 
 def _fetch_active_tickers(conn) -> list[tuple[str, str]]:
@@ -188,13 +181,13 @@ def _fetch_events_by_date(
     end_date: Optional[date],
 ) -> dict[date, list[str]]:
     if start_date and end_date:
-        where_clause = "time::date >= %s AND time::date <= %s"
+        where_clause = "ny_date >= %s AND ny_date <= %s"
         params = (ticker_id, start_date, end_date)
     elif start_date:
-        where_clause = "time::date >= %s"
+        where_clause = "ny_date >= %s"
         params = (ticker_id, start_date)
     elif end_date:
-        where_clause = "time::date <= %s"
+        where_clause = "ny_date <= %s"
         params = (ticker_id, end_date)
     else:
         where_clause = "TRUE"
@@ -203,12 +196,33 @@ def _fetch_events_by_date(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT time::date, events_detected
-            FROM daily_snapshots
-            WHERE ticker_id = %s AND {where_clause}
-            ORDER BY time ASC
+            SELECT ny_date, events_detected
+            FROM (
+                SELECT DISTINCT ON (ny_date)
+                       ny_date,
+                       events_detected,
+                       time
+                FROM (
+                    SELECT
+                        (time AT TIME ZONE 'America/New_York')::date AS ny_date,
+                        events_detected,
+                        time
+                    FROM daily_snapshots
+                    WHERE ticker_id = %s
+                ) ranked
+                WHERE {where_clause}
+                ORDER BY
+                    ny_date ASC,
+                    CASE
+                        WHEN (time AT TIME ZONE 'UTC')::time = %s THEN 0
+                        ELSE 1
+                    END ASC,
+                    CASE WHEN events_detected IS NULL THEN 1 ELSE 0 END ASC,
+                    time DESC
+            ) deduped
+            ORDER BY ny_date ASC
             """,
-            params,
+            params + (CANONICAL_DAILY_SNAPSHOT_UTC_TIME,),
         )
         rows = cur.fetchall()
 

@@ -338,6 +338,12 @@ The watchlist is treated as **data**, not configuration.
 | **Price Metrics** | rvol, vsi, hv_20, hv_60, iv_hv_diff |
 | **JSONB Storage** | technical_indicators_json, dealer_metrics_json, volatility_metrics_json, price_metrics_json |
 
+`daily_snapshots` timestamp contract:
+- Canonical stored timestamp is `23:59:59.999999+00:00` for the target trading day.
+- Business date is interpreted as `(time AT TIME ZONE 'America/New_York')::date`.
+- The analytical contract is one authoritative row per `(ticker_id, NY trading day)`.
+- Duplicate physical rows for the same `(ticker_id, NY trading day)` are invalid persistence drift, even if raw UTC timestamps differ.
+
 Scores quantify structural context only and MUST NOT be interpreted as entry or exit signals without a downstream consumer.
 
 

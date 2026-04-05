@@ -27,6 +27,20 @@ def _snapshot_time_for_date(snapshot_date: date) -> datetime:
     )
 
 
+def _split_snapshot_time_for_date(snapshot_date: date) -> datetime:
+    next_day = snapshot_date + timedelta(days=1)
+    return datetime(
+        next_day.year,
+        next_day.month,
+        next_day.day,
+        4,
+        59,
+        59,
+        999999,
+        tzinfo=timezone.utc,
+    )
+
+
 def _insert_ticker(conn, symbol: str) -> str:
     with conn.cursor() as cur:
         cur.execute("INSERT INTO tickers (symbol) VALUES (%s) RETURNING id::text", (symbol,))
@@ -47,6 +61,23 @@ def _seed_daily_snapshot(conn, *, ticker_id: str, snapshot_date: date, regime: s
                 ticker_id,
                 regime,
                 _snapshot_time_for_date(snapshot_date),
+            ),
+        )
+    conn.commit()
+
+
+def _seed_duplicate_split_snapshot(conn, *, ticker_id: str, snapshot_date: date, regime: str | None = None) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO daily_snapshots (time, ticker_id, wyckoff_regime, created_at)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (
+                _split_snapshot_time_for_date(snapshot_date),
+                ticker_id,
+                regime,
+                _split_snapshot_time_for_date(snapshot_date),
             ),
         )
     conn.commit()
@@ -174,8 +205,10 @@ def test_b4_end_to_end_and_idempotent() -> None:
                 SELECT event_date, event_type, prior_regime, context_label
                 FROM wyckoff_context_events
                 WHERE ticker_id = %s
+                  AND event_date = %s
+                  AND event_type = 'SOS'
                 """,
-                (ticker_id,),
+                (ticker_id, dates[5]),
             )
             context = cur.fetchone()
             assert context is not None
@@ -189,8 +222,9 @@ def test_b4_end_to_end_and_idempotent() -> None:
                 SELECT date, evidence_json
                 FROM wyckoff_snapshot_evidence
                 WHERE ticker_id = %s
+                  AND date = %s
                 """,
-                (ticker_id,),
+                (ticker_id, dates[5]),
             )
             evidence = cur.fetchone()
             assert evidence is not None
@@ -203,5 +237,47 @@ def test_b4_end_to_end_and_idempotent() -> None:
         run_wyckoff_derived_job(conn, include_evidence=True)
         assert _count_rows(conn, "wyckoff_regime_transitions") == 1
         assert _count_rows(conn, "wyckoff_sequences") == 1
-        assert _count_rows(conn, "wyckoff_context_events") == 1
-        assert _count_rows(conn, "wyckoff_snapshot_evidence") == 1
+        assert _count_rows(conn, "wyckoff_context_events") == 4
+        assert _count_rows(conn, "wyckoff_snapshot_evidence") == 2
+
+
+@pytest.mark.integration
+@pytest.mark.db
+def test_b4_prefers_canonical_snapshot_row_when_duplicate_ny_day_rows_exist() -> None:
+    db_url = _test_db_url()
+    if not db_url:
+        pytest.skip("KAPMAN_TEST_DATABASE_URL is not set")
+
+    reset_and_migrate(db_url, default_migrations_dir())
+
+    start_date = date(2025, 2, 1)
+    dates = [start_date + timedelta(days=offset) for offset in range(6)]
+
+    with psycopg2.connect(db_url) as conn:
+        ticker_id = _insert_ticker(conn, "AAPL")
+        for idx, snapshot_date in enumerate(dates):
+            regime = "ACCUMULATION" if idx < 5 else "MARKUP"
+            _seed_daily_snapshot(conn, ticker_id=ticker_id, snapshot_date=snapshot_date, regime=regime)
+            _seed_duplicate_split_snapshot(conn, ticker_id=ticker_id, snapshot_date=snapshot_date, regime=None)
+
+        _seed_context_event(
+            conn,
+            ticker_id=ticker_id,
+            event_date=dates[5],
+            event_type="SOS",
+            prior_regime="ACCUMULATION",
+            context_label="SOS_after_ACCUMULATION",
+        )
+
+        run_wyckoff_derived_job(conn)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM wyckoff_regime_transitions
+                WHERE ticker_id = %s
+                """,
+                (ticker_id,),
+            )
+            assert cur.fetchone()[0] == 1

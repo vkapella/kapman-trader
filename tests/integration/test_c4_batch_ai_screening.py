@@ -75,6 +75,33 @@ def _seed_watchlist_snapshot(
     conn.commit()
 
 
+def _seed_split_a3_snapshot(conn, *, symbol: str, split_time: datetime) -> None:
+    snapshot_date = split_time.date()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id::text FROM tickers WHERE symbol = %s", (symbol,))
+        ticker_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO daily_snapshots (
+                time,
+                ticker_id,
+                dealer_metrics_json,
+                model_version,
+                created_at
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                split_time,
+                ticker_id,
+                Json({"spot_price": 185.5}),
+                "A3-dealer-metrics-v2",
+                split_time,
+            ),
+        )
+    conn.commit()
+
+
 @pytest.mark.integration
 @pytest.mark.db
 def test_c4_batch_ai_screening_dry_run() -> None:
@@ -113,3 +140,39 @@ def test_c4_batch_ai_screening_dry_run() -> None:
         raw = entry["raw_normalized_response"]
         assert raw["discarded_metrics"] == ["dry_run"]
         assert raw["conditional_recommendation"]["action"] == "HOLD"
+
+
+@pytest.mark.integration
+@pytest.mark.db
+def test_c4_default_snapshot_resolution_prefers_latest_canonical_daily_snapshot() -> None:
+    db_url = _test_db_url()
+    if not db_url:
+        pytest.skip("KAPMAN_TEST_DATABASE_URL is not set")
+
+    reset_and_migrate(db_url, default_migrations_dir())
+
+    canonical_time = datetime(2025, 12, 5, 23, 59, 59, 999999, tzinfo=timezone.utc)
+    split_time = datetime(2025, 12, 6, 4, 59, 59, 999999, tzinfo=timezone.utc)
+
+    with psycopg2.connect(db_url) as conn:
+        _seed_watchlist_snapshot(conn, symbol="AAPL", snapshot_time=canonical_time)
+        _seed_split_a3_snapshot(conn, symbol="AAPL", split_time=split_time)
+
+        log = logging.getLogger("test.c4.canonical")
+        log.handlers.clear()
+        log.addHandler(logging.NullHandler())
+
+        responses = run_batch_ai_screening(
+            conn,
+            snapshot_time=None,
+            ai_provider="anthropic",
+            ai_model="test-model",
+            batch_size=2,
+            batch_wait_seconds=0.0,
+            max_retries=0,
+            backoff_base_seconds=0.0,
+            dry_run=True,
+            log=log,
+        )
+
+    assert [entry["ticker"] for entry in responses] == ["AAPL"]

@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 
 import psycopg2
 
+from core.daily_snapshots import canonical_snapshot_time_for_timestamp, ny_trading_date
 from core.ingestion.options.db import default_db_url
 from core.metrics.dealer_metrics_job import run_dealer_metrics_job
 
@@ -17,6 +18,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--db-url", type=str, default=None, help="Override DATABASE_URL")
     parser.add_argument("--date", type=_parse_date, default=None, help="Single trading date (YYYY-MM-DD)")
+    parser.add_argument(
+        "--snapshot-time",
+        type=_parse_snapshot_time,
+        default=None,
+        help="Optional legacy snapshot timestamp; normalized to the canonical stored daily_snapshots time for its NY trading day",
+    )
     parser.add_argument("--start-date", type=_parse_date, default=None, help="Start trading date (YYYY-MM-DD)")
     parser.add_argument("--end-date", type=_parse_date, default=None, help="End trading date (YYYY-MM-DD)")
     parser.add_argument(
@@ -27,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true", help="INFO-level per-ticker logging")
     parser.add_argument("--debug", action="store_true", help="DEBUG-level per-metric detail (implies --verbose)")
     parser.add_argument("--quiet", action="store_true", help="Only warnings + summaries")
+    parser.add_argument(
+        "--log-level",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default=None,
+        help="Compatibility override for script callers that previously passed --log-level",
+    )
     parser.add_argument("--heartbeat", type=int, default=50, help="Heartbeat every N tickers (default: 50)")
     parser.add_argument("--max-dte-days", type=int, default=90, help="Max DTE days (default 90)")
     parser.add_argument(
@@ -68,12 +81,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_verbosity(verbose_flag: bool, debug_flag: bool, quiet_flag: bool) -> tuple[bool, bool]:
-    debug = bool(debug_flag)
+def _resolve_verbosity(
+    verbose_flag: bool,
+    debug_flag: bool,
+    quiet_flag: bool,
+    log_level: str | None,
+) -> tuple[bool, bool, bool]:
+    level = (log_level or "").upper()
+    quiet = bool(quiet_flag) or level in {"WARNING", "ERROR"}
+    debug = bool(debug_flag) or level == "DEBUG"
     verbose = bool(verbose_flag) or debug
-    if quiet_flag:
-        return False, False
-    return debug, verbose
+    if quiet:
+        return True, False, False
+    return quiet, debug, verbose
 
 
 def _parse_date(value: str) -> date:
@@ -81,6 +101,19 @@ def _parse_date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"Invalid date: {value} (expected YYYY-MM-DD)") from exc
+
+
+def _parse_snapshot_time(value: str) -> datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid snapshot-time: {value} (expected ISO-8601)") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _latest_ohlcv_date(conn) -> date | None:
@@ -104,8 +137,15 @@ def _ohlcv_dates_in_range(conn, start: date, end: date) -> list[date]:
 
 
 def _resolve_snapshot_dates(
-    conn, *, date_value: date | None, start_date: date | None, end_date: date | None
+    conn,
+    *,
+    date_value: date | None,
+    snapshot_time: datetime | None,
+    start_date: date | None,
+    end_date: date | None,
 ) -> list[date]:
+    if snapshot_time is not None:
+        return [ny_trading_date(snapshot_time)]
     if date_value is not None:
         return [date_value]
     if start_date is not None or end_date is not None:
@@ -143,8 +183,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    quiet = bool(args.quiet)
-    debug, verbose = _resolve_verbosity(args.verbose, args.debug, quiet)
+    if args.snapshot_time is not None and (
+        args.date is not None or args.start_date is not None or args.end_date is not None
+    ):
+        raise SystemExit("--snapshot-time cannot be combined with --date or --start-date/--end-date")
+
+    quiet, debug, verbose = _resolve_verbosity(args.verbose, args.debug, bool(args.quiet), args.log_level)
 
     log = _configure_logging(quiet=quiet, debug=debug)
 
@@ -154,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             snapshot_dates = _resolve_snapshot_dates(
                 conn,
                 date_value=args.date,
+                snapshot_time=args.snapshot_time,
                 start_date=args.start_date,
                 end_date=args.end_date,
             )
@@ -166,6 +211,15 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 log.warning("[A3] ohlcv is empty; nothing to compute")
             return 0
+
+        if args.snapshot_time is not None:
+            canonical = canonical_snapshot_time_for_timestamp(args.snapshot_time)
+            log.info(
+                "[A3] snapshot_time=%s normalized to trading_date=%s canonical_snapshot_time=%s",
+                args.snapshot_time.isoformat(),
+                ny_trading_date(args.snapshot_time).isoformat(),
+                canonical.isoformat(),
+            )
 
         run_dealer_metrics_job(
             conn,
