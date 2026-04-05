@@ -195,9 +195,9 @@ LOGIC:
 - IF: Fetching technical indicators for 1 symbol
 - THEN: Use get_technical_analysis(symbol, mode="common") for standard set
 - OR: Use get_technical_analysis(symbol, mode="single", indicator="adx") for ADX/DI+/DI-
-- IF: Fetching technical indicators for 2-10 symbols
+- IF: Fetching technical indicators for 2+ symbols
 - THEN: Use get_batch_technical_analysis(symbols=[], mode="common")
-- AND: Max 10 symbols per call.
+- AND: Default max 30 symbols per call per Polygon MCP canonical batch guidance.
 - IF: Fetching OHLCV / price history for 1 symbol
 - THEN: Use get_symbol_data(symbol, data_type="aggregates", timespan="day", limit=200)
 - IF: Fetching OHLCV / price history for 2+ symbols
@@ -212,7 +212,7 @@ LOGIC:
 - NEVER: Call get_batch_quotes — deprecated 2026-03-28
 - NEVER: Call get_batch_stock_aggregates — deprecated 2026-03-28
 - NEVER: Call get_batch_options_metrics with more than 30 symbols
-- NEVER: Call get_batch_technical_analysis with more than 10 symbols
+- NEVER: Call get_batch_technical_analysis with more than the Polygon MCP canonical batch max (default 30 symbols unless server-configured otherwise)
 PERFORMANCE:
 - Batch vs sequential (30 symbols): 1 tool call vs 30 (97% turn reduction)
 - Token overhead reduction: ~41% (envelope/wrapper savings; payload identical)
@@ -284,7 +284,7 @@ likely to hit default truncation thresholds.
   get_price_metrics, get_technical_indicators, get_single_indicator,
   get_stock_aggregates, etc.) — use canonical replacements per PIPELINE_010.
 - NEVER call get_batch_options_metrics with more than 30 symbols.
-- NEVER call get_batch_technical_analysis with more than 10 symbols.
+- NEVER call get_batch_technical_analysis with more than the Polygon MCP canonical batch max (default 30 symbols unless server-configured otherwise).
 - NEVER reuse Pass 1 Schwab dealer metrics for Pass 2 validation —
   always re-fetch live (PIPELINE_011, compaction guard).
 - NEVER assume a Schwab chain result is complete if strike count is

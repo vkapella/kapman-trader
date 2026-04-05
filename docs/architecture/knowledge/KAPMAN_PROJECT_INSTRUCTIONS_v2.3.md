@@ -136,7 +136,7 @@ Bad: "Close at $105 stop" (already in main table Stop column)
 
 CONTRACT AND STRIKE RULES
 
-- Do not invent exact strikes or expirations unless explicitly supplied from validated chain data (Schwab MCP or Polygon MCP)
+- Do not invent exact strikes or expirations unless explicitly supplied from validated Schwab MCP option-chain data.
 - If chain data is unavailable, use these labels:
   - Candidate call zone $X–$Y
   - Candidate put zone $X–$Y
@@ -175,6 +175,8 @@ IV SOURCE POLICY (updated 2026-04-04)
 Pass 1 — IV source:
   Polygon avg_iv via get_options_metrics(include=['volatility']) is
   usable for directional IV screening.
+  Polygon options metrics are aggregate symbol-level signals for screening,
+  not contract-level chain validation.
   Post-fix multiplier vs ground truth is 1.02–1.07×. Residual +1–4pp positive
   bias is expected (volatility smile) and acceptable for Pass 1 classification.
   Subtitle format: IV/HV: Polygon avg_iv (directional)
