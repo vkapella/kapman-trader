@@ -110,8 +110,11 @@ def test_b2_insufficient_bars_are_explicit(monkeypatch) -> None:
     log = MagicMock()
 
     monkeypatch.setattr(b2_module, "_fetch_active_tickers", lambda _conn: [("t1", "ABC")])
-    monkeypatch.setattr(b2_module, "_fetch_snapshot_dates", lambda *args, **kwargs: [date(2024, 1, 1)])
-    monkeypatch.setattr(b2_module, "_assert_snapshot_coverage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        b2_module,
+        "_fetch_snapshot_dates_by_ticker",
+        lambda *args, **kwargs: {"t1": [date(2024, 1, 1)]},
+    )
     monkeypatch.setattr(
         b2_module,
         "_fetch_ohlcv_history",
@@ -142,10 +145,9 @@ def test_b2_emits_structural_events_for_valid_fixture(monkeypatch) -> None:
     monkeypatch.setattr(b2_module, "_fetch_active_tickers", lambda _conn: [("t1", "ABC")])
     monkeypatch.setattr(
         b2_module,
-        "_fetch_snapshot_dates",
-        lambda *args, **kwargs: [date(2024, 1, 1), date(2024, 1, 2)],
+        "_fetch_snapshot_dates_by_ticker",
+        lambda *args, **kwargs: {"t1": [date(2024, 1, 1), date(2024, 1, 2)]},
     )
-    monkeypatch.setattr(b2_module, "_assert_snapshot_coverage", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         b2_module,
         "_fetch_ohlcv_history",
@@ -185,10 +187,9 @@ def test_b2_skips_zero_event_days_but_advances(monkeypatch) -> None:
     monkeypatch.setattr(b2_module, "_fetch_active_tickers", lambda _conn: [("t1", "ABC")])
     monkeypatch.setattr(
         b2_module,
-        "_fetch_snapshot_dates",
-        lambda *args, **kwargs: [date(2024, 1, 1), date(2024, 1, 2)],
+        "_fetch_snapshot_dates_by_ticker",
+        lambda *args, **kwargs: {"t1": [date(2024, 1, 1), date(2024, 1, 2)]},
     )
-    monkeypatch.setattr(b2_module, "_assert_snapshot_coverage", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         b2_module,
         "_fetch_ohlcv_history",
@@ -210,3 +211,72 @@ def test_b2_skips_zero_event_days_but_advances(monkeypatch) -> None:
     dates_upserted = sorted({row[0].date() for row in captured_snapshots})
     assert dates_upserted == [date(2024, 1, 1), date(2024, 1, 2)]
     assert stats["snapshots_written"] == len(captured_snapshots)
+
+
+def test_b2_fetch_snapshot_dates_by_ticker_returns_per_ticker_ny_dates() -> None:
+    conn = MagicMock()
+    cur = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cur
+    cur.fetchall.return_value = [
+        ("t1", date(2024, 1, 1)),
+        ("t1", date(2024, 1, 2)),
+        ("t2", date(2024, 1, 2)),
+    ]
+
+    result = b2_module._fetch_snapshot_dates_by_ticker(
+        conn,
+        ticker_ids=["t1", "t2", "t3"],
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 2),
+    )
+
+    sql = cur.execute.call_args[0][0]
+    params = cur.execute.call_args[0][1]
+    assert "ticker_id::text = ANY(%s)" in sql
+    assert "(time AT TIME ZONE 'America/New_York')::date >= %s" in sql
+    assert "(time AT TIME ZONE 'America/New_York')::date <= %s" in sql
+    assert params[0] == ["t1", "t2", "t3"]
+    assert params[1] == date(2024, 1, 1)
+    assert params[2] == date(2024, 1, 2)
+    assert result == {
+        "t1": [date(2024, 1, 1), date(2024, 1, 2)],
+        "t2": [date(2024, 1, 2)],
+        "t3": [],
+    }
+
+
+def test_b2_skips_zero_snapshot_ticker_without_aborting_valid_peers(monkeypatch) -> None:
+    conn = MagicMock()
+    log = MagicMock()
+    captured_snapshots: list[tuple] = []
+    seen_fetches: list[str] = []
+
+    def _fake_execute_values(cursor, sql, values, page_size=None):
+        if "daily_snapshots" in sql:
+            captured_snapshots.extend(values)
+
+    def _fake_fetch_ohlcv(*_args, **kwargs):
+        seen_fetches.append(kwargs["ticker_id"])
+        return _make_ohlcv_rows(date(2024, 1, 1), 60)
+
+    monkeypatch.setattr(b2_module, "execute_values", _fake_execute_values)
+    monkeypatch.setattr(b2_module, "_fetch_active_tickers", lambda _conn: [("t1", "AAA"), ("t2", "BBB")])
+    monkeypatch.setattr(
+        b2_module,
+        "_fetch_snapshot_dates_by_ticker",
+        lambda *args, **kwargs: {
+            "t1": [date(2024, 1, 1), date(2024, 1, 2)],
+            "t2": [],
+        },
+    )
+    monkeypatch.setattr(b2_module, "_fetch_ohlcv_history", _fake_fetch_ohlcv)
+    monkeypatch.setattr(b2_module, "detect_structural_wyckoff", lambda *_args, **_kwargs: {"events": []})
+
+    stats = b2_module.run_wyckoff_structural_events_job(conn, log=log)
+
+    assert stats["processed"] == 1
+    assert stats["missing_history"] == 1
+    assert seen_fetches == ["t1"]
+    assert sorted({row[0].date() for row in captured_snapshots}) == [date(2024, 1, 1), date(2024, 1, 2)]
+    warnings = [call.args[0] for call in log.warning.call_args_list]
+    assert any("has no authoritative daily_snapshots in requested window" in msg for msg in warnings)

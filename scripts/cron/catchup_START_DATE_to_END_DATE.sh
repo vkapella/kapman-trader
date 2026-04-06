@@ -7,8 +7,14 @@ set -euo pipefail
 # Usage:
 #   scripts/cron/catchup_START_DATE_to_END_DATE.sh START_DATE END_DATE
 #
-# Example:
-#   scripts/cron/catchup_START_DATE_to_END_DATE.sh 2026-01-27 2026-01-28
+# Examples:
+#   scripts/cron/catchup_START_DATE_to_END_DATE.sh 2026-04-03 2026-04-03
+#     Single-day catch-up. Use this when one published trading day is missing
+#     and you want to ingest and hydrate only that exact date.
+#
+#   scripts/cron/catchup_START_DATE_to_END_DATE.sh 2026-04-01 2026-04-03
+#     Multi-day catch-up. Use this when several consecutive trading days are
+#     missing and you want to backfill the full pipeline across the whole range.
 #
 # Order:
 #   A0  OHLCV
