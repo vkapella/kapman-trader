@@ -94,22 +94,28 @@ def _snapshot_time_utc(snapshot_date: date) -> datetime:
     )
 
 
-def _fetch_snapshot_dates(
+def _fetch_snapshot_dates_by_ticker(
     conn,
     *,
+    ticker_ids: Sequence[str],
     start_date: Optional[date],
     end_date: Optional[date],
-) -> list[date]:
-    """Return distinct NY dates available in daily_snapshots for the range.
+) -> dict[str, list[date]]:
+    """Return authoritative NY snapshot dates keyed by ticker_id.
 
-    The driver for B2 advancement must be authoritative snapshot availability,
-    not prior B2 output. We therefore derive target trading days from
-    daily_snapshots regardless of whether any Wyckoff events were emitted.
+    B2 should only operate on daily snapshots that already exist for each
+    ticker. Historical reruns therefore use a per-ticker date map rather than
+    a synthetic global date grid across today's universe.
     """
+
+    if not ticker_ids:
+        return {}
 
     where_clauses: list[str] = []
     params: list[Any] = []
 
+    where_clauses.append("ticker_id::text = ANY(%s)")
+    params.append(list(ticker_ids))
     if start_date:
         where_clauses.append("(time AT TIME ZONE 'America/New_York')::date >= %s")
         params.append(start_date)
@@ -117,64 +123,22 @@ def _fetch_snapshot_dates(
         where_clauses.append("(time AT TIME ZONE 'America/New_York')::date <= %s")
         params.append(end_date)
 
-    where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT DISTINCT (time AT TIME ZONE 'America/New_York')::date AS ny_date
+            SELECT DISTINCT ticker_id::text,
+                   (time AT TIME ZONE 'America/New_York')::date AS ny_date
             FROM daily_snapshots
-            {where_sql}
-            ORDER BY ny_date ASC
+            WHERE {" AND ".join(where_clauses)}
+            ORDER BY ticker_id::text ASC, ny_date ASC
             """,
             tuple(params),
         )
         rows = cur.fetchall()
-    return [row[0] for row in rows]
-
-
-def _assert_snapshot_coverage(
-    conn,
-    *,
-    target_dates: Sequence[date],
-    ticker_ids: Sequence[str],
-):
-    """Ensure daily_snapshots already contains rows for every (ticker, date).
-
-    We fail fast if any target NY date is missing authoritative snapshots for
-    the tickers being processed. This protects determinism and prevents B2 from
-    silently creating new rows in lieu of upstream snapshots.
-    """
-
-    if not target_dates:
-        raise ValueError("no target_dates provided for B2 execution")
-    if not ticker_ids:
-        raise ValueError("no tickers resolved for B2 execution")
-
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT (time AT TIME ZONE 'America/New_York')::date AS ny_date,
-                   COUNT(DISTINCT ticker_id) AS tickers_present
-            FROM daily_snapshots
-            WHERE (time AT TIME ZONE 'America/New_York')::date = ANY(%s)
-              AND ticker_id::text = ANY(%s)
-            GROUP BY ny_date
-            """,
-            (list(target_dates), list(ticker_ids)),
-        )
-        coverage = {row[0]: int(row[1]) for row in cur.fetchall()}
-
-    missing: list[date] = []
-    expected = len(set(ticker_ids))
-    for d in target_dates:
-        if coverage.get(d, 0) < expected:
-            missing.append(d)
-
-    if missing:
-        missing_str = ", ".join(sorted(d.isoformat() for d in missing))
-        raise ValueError(
-            f"daily_snapshots missing {expected - coverage.get(missing[0], 0)}+ ticker snapshots for date(s): {missing_str}"
-        )
+    dates_by_ticker: dict[str, list[date]] = {str(ticker_id): [] for ticker_id in ticker_ids}
+    for ticker_id, snapshot_date in rows:
+        dates_by_ticker.setdefault(str(ticker_id), []).append(snapshot_date)
+    return dates_by_ticker
 
 
 def _required_history_bars(cfg: WyckoffStructuralConfig) -> int:
@@ -418,17 +382,30 @@ def run_wyckoff_structural_events_job(
         )
 
     ticker_ids = [tid for tid, _ in tickers]
-    target_dates = _fetch_snapshot_dates(conn, start_date=start_date, end_date=end_date)
-    if not target_dates:
+    target_dates_by_ticker = _fetch_snapshot_dates_by_ticker(
+        conn,
+        ticker_ids=ticker_ids,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if not any(target_dates_by_ticker.values()):
         raise ValueError("No daily_snapshots dates found for requested window; cannot run B2")
-
-    _assert_snapshot_coverage(conn, target_dates=target_dates, ticker_ids=ticker_ids)
 
     cfg = WyckoffStructuralConfig()
     required_bars = _required_history_bars(cfg)
 
     for ticker_id, symbol in tickers:
         try:
+            target_dates = target_dates_by_ticker.get(ticker_id, [])
+            if not target_dates:
+                stats.missing_history += 1
+                log.warning(
+                    "[B2] Symbol %s (%s) has no authoritative daily_snapshots in requested window; skipping",
+                    symbol,
+                    ticker_id,
+                )
+                continue
+
             rows = _fetch_ohlcv_history(
                 conn,
                 ticker_id=ticker_id,
