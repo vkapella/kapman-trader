@@ -68,6 +68,23 @@ find_conflicting_port_5432_container() {
     | awk '$0 ~ /0\.0\.0\.0:5432->5432\/tcp|:::5432->5432\/tcp/ { print $1; exit }'
 }
 
+wait_for_kapman_db() {
+  local max_attempts="${1:-30}"
+  local attempt=1
+
+  while (( attempt <= max_attempts )); do
+    if docker exec kapman-db pg_isready -U "${DB_USER:-kapman}" -d "${DB_NAME:-kapman}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    attempt="$((attempt + 1))"
+  done
+
+  echo "ERROR: kapman-db did not become ready after ${max_attempts}s."
+  docker ps --filter "name=^kapman-db$" --format 'container={{.Names}} status={{.Status}} ports={{.Ports}}'
+  return 1
+}
+
 format_duration() {
   local total_seconds="$1"
   printf "%02d:%02d:%02d" \
@@ -392,6 +409,7 @@ if [[ -n "${PORT_5432_OWNER}" && "${PORT_5432_OWNER}" != "kapman-db" ]]; then
   exit 1
 fi
 docker compose up -d db
+wait_for_kapman_db
 
 if [[ $# -eq 2 ]]; then
   REQUEST_MODE="explicit"
