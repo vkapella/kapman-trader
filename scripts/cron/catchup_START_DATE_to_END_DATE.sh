@@ -63,6 +63,11 @@ cleanup() {
 
 trap cleanup EXIT
 
+find_conflicting_port_5432_container() {
+  docker ps --format '{{.Names}} {{.Ports}}' \
+    | awk '$0 ~ /0\.0\.0\.0:5432->5432\/tcp|:::5432->5432\/tcp/ { print $1; exit }'
+}
+
 format_duration() {
   local total_seconds="$1"
   printf "%02d:%02d:%02d" \
@@ -379,8 +384,14 @@ set -a
 source "${REPO_ROOT}/.env"
 set +a
 
-echo "==> Ensuring Docker environment is running"
-docker compose up -d
+echo "==> Ensuring Docker DB is running"
+PORT_5432_OWNER="$(find_conflicting_port_5432_container)"
+if [[ -n "${PORT_5432_OWNER}" && "${PORT_5432_OWNER}" != "kapman-db" ]]; then
+  echo "ERROR: host port 5432 is already allocated by container ${PORT_5432_OWNER}."
+  echo "Stop the conflicting container or move one project's Postgres host port before rerunning."
+  exit 1
+fi
+docker compose up -d db
 
 if [[ $# -eq 2 ]]; then
   REQUEST_MODE="explicit"
