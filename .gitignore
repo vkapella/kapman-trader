@@ -78,3 +78,6 @@ tools/prod_vs_bench/outputs/
 
 data/llms
 data/llm
+data/llm_traces
+data/chart_packs
+data/cron_reports

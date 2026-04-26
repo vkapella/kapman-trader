@@ -815,6 +815,7 @@ def run_batch_ai_screening(
     batch_wait_seconds: float = DEFAULT_BATCH_WAIT_SECONDS,
     max_retries: int = DEFAULT_MAX_RETRIES,
     backoff_base_seconds: float = DEFAULT_BACKOFF_BASE_SECONDS,
+    ai_debug: bool = False,
     dry_run: bool = False,
     log: Optional[logging.Logger] = None,
 ) -> list[dict[str, Any]]:
@@ -964,7 +965,7 @@ def run_batch_ai_screening(
                         instructions=_build_instructions(),
                         prompt_version=MODEL_VERSION,
                         kapman_model_version=MODEL_VERSION,
-                        debug=False,
+                        debug=bool(ai_debug),
                         dry_run=dry_run,
                     )
                     error_reason = None
