@@ -391,6 +391,7 @@ KapMan C4: batch AI screening execution.
 
 python -m scripts.run_c4_batch_ai_screening --provider openai --model gpt-5 --dry-run
 python -m scripts.run_c4_batch_ai_screening --provider openai --model gpt-5 --dry-run --llm-trace full --llm-trace-dir data/llm --symbols AAPL
+python -m scripts.run_c4_batch_ai_screening --provider openai --model gpt-5 --debug --symbols AAPL
 python -m scripts.run_c4_batch_ai_screening --provider anthropic --model claude-sonnet --snapshot-time 2026-04-02T23:59:59.999999+00:00
 
 Usage:
@@ -399,7 +400,7 @@ python -m scripts.run_c4_batch_ai_screening [--db-url DB_URL] [--snapshot-time S
   --provider {anthropic,openai} --model MODEL [--batch-size BATCH_SIZE] \
   [--batch-wait-seconds BATCH_WAIT_SECONDS] [--max-retries MAX_RETRIES] \
   [--backoff-base-seconds BACKOFF_BASE_SECONDS] [--dry-run] \
-  [--log-level {DEBUG,INFO,WARNING,ERROR}] [--symbols SYMBOLS] \
+  [--log-level {DEBUG,INFO,WARNING,ERROR}] [--debug] [--symbols SYMBOLS] \
   [--llm-trace {off,summary,full}] [--llm-trace-dir LLM_TRACE_DIR]
 
 Supported arguments:
@@ -413,6 +414,7 @@ Supported arguments:
 - --backoff-base-seconds BACKOFF_BASE_SECONDS: Base retry backoff.
 - --dry-run: Build batches and context without provider calls.
 - --log-level {DEBUG,INFO,WARNING,ERROR}: Log level.
+- --debug: Enable debug tracing in `invoke_planning_agent`.
 - --symbols SYMBOLS: Comma-delimited list of symbols.
 - --llm-trace {off,summary,full}: Trace level.
 - --llm-trace-dir LLM_TRACE_DIR: Trace output directory.
@@ -464,18 +466,19 @@ optional arguments:
 
 Slice C AI dev runner
 
+Use this helper to exercise `invoke_planning_agent` directly with a fixed sample payload.
+
 python tools/ai_dev_runner.py --provider anthropic --model claude-opus-4-5 --debug
-python tools/ai_dev_runner.py --provider openai --model gpt-5.2-2025-12-11 --debug
+python tools/ai_dev_runner.py --provider openai --model gpt-5.2-2025-12-11 --dry-run
 
 usage: ai_dev_runner.py [-h] --provider {anthropic,openai} --model MODEL [--debug] [--dry-run]
-
 
 optional arguments:
   -h, --help           show this help message and exit
   --provider {anthropic,openai}
   --model MODEL
-  --debug
-  --dry-run
+  --debug              Enable debug tracing in `invoke_planning_agent`
+  --dry-run            Return the normalized stub response without calling the provider
 
 ## Chart Generation
 

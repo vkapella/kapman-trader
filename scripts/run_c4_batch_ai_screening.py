@@ -538,6 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbols", default=None, help="Comma-delimited list of symbols")
     parser.add_argument("--llm-trace", choices=["off", "summary", "full"], default="off")
     parser.add_argument("--llm-trace-dir", default="data/llm_traces/")
+    parser.add_argument("--debug", action="store_true", help="Enable debug tracing in invoke_planning_agent")
     return parser
 
 
@@ -570,6 +571,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     writer = _build_trace_writer(args.llm_trace, args.llm_trace_dir)
     symbols = _parse_symbols(args.symbols)
     symbols_filter = symbols if args.symbols is not None else None
+    ai_debug = bool(args.debug) or str(args.log_level).upper() == "DEBUG"
 
     with psycopg2.connect(db_url) as conn:
         with TraceHooks(writer):
@@ -583,6 +585,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 batch_wait_seconds=float(args.batch_wait_seconds),
                 max_retries=int(args.max_retries),
                 backoff_base_seconds=float(args.backoff_base_seconds),
+                ai_debug=ai_debug,
                 dry_run=bool(args.dry_run),
                 log=log,
             )
