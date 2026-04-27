@@ -80,4 +80,7 @@ data/llms
 data/llm
 data/llm_traces
 data/chart_packs
-data/cron_reports
+data/cron_reportsvenv/
+data/
+A1-options-output
+kapman_daily_snapshots_introspection_output.txt
