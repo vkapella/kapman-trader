@@ -3,8 +3,18 @@ from typing import Optional, Type, Dict, Any
 from .market_data.base import MarketDataProvider, ProviderInfo
 from .market_data.polygon_s3 import PolygonS3Provider
 from .ai.base import AIProvider
-from .ai.claude import ClaudeProvider
-from .ai.openai import OpenAIProvider
+
+
+def __getattr__(name: str):
+    if name == "ClaudeProvider":
+        from .ai.claude import ClaudeProvider
+
+        return ClaudeProvider
+    if name == "OpenAIProvider":
+        from .ai.openai import OpenAIProvider
+
+        return OpenAIProvider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 def get_market_data_provider(provider_type: str = "polygon_s3", **kwargs) -> MarketDataProvider:
     """
@@ -43,6 +53,9 @@ def get_ai_provider(provider_type: str = "anthropic", **kwargs) -> AIProvider:
     Returns:
         An instance of the specified AI provider.
     """
+    from .ai.claude import ClaudeProvider
+    from .ai.openai import OpenAIProvider
+
     providers = {
         "anthropic": ClaudeProvider,
         "openai": OpenAIProvider,
