@@ -66,12 +66,15 @@ Thumbs.db
 .env.backup
 
 .venv/
-.pytest_cache/
-frontend/node_modules, frontend/.next/
-api/node_moduleskapman.egg-infodb/*.sql
 venv/
+.pytest_cache/
+frontend/node_modules/
+frontend/.next/
+api/node_modules/
+kapman.egg-info/
+db/*.sql
 
-## Large daily ouputs
+## Large daily outputs
 
 # KapMan prod vs bench generated artifacts
 tools/prod_vs_bench/outputs/
@@ -80,7 +83,7 @@ data/llms
 data/llm
 data/llm_traces
 data/chart_packs
-data/cron_reportsvenv/
+data/cron_reports/
 data/
-A1-options-output
+A1-options-output/
 kapman_daily_snapshots_introspection_output.txt
