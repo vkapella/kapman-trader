@@ -40,6 +40,11 @@ Returns normalized persisted metrics for one symbol from the latest eligible sna
 
 ### `get_metrics_batch(symbols, as_of_date)`
 
+Required inputs:
+
+- `symbols`: list of symbols, maximum 30
+- `as_of_date`: `YYYY-MM-DD`; required and must be supplied explicitly by the caller
+
 Returns the same per-symbol field schema as `get_metrics`, keyed by symbol:
 
 ```json
@@ -63,6 +68,11 @@ Symbols with no ticker or no eligible snapshot are omitted from `results` and li
 
 ### `screen_symbols(symbols, as_of_date)`
 
+Required inputs:
+
+- `symbols`: list of symbols, maximum 30
+- `as_of_date`: `YYYY-MM-DD`; required and must be supplied explicitly by the caller
+
 Runs the same ranking logic as `screen_watchlist`, but only for the supplied symbols. Use this when the operator already has a ticker list and needs a completeness-preserving screen for that list.
 
 Response mirrors `screen_watchlist` and appends `missing_symbols`:
@@ -85,6 +95,8 @@ Screens the stored active watchlist and returns the first `limit` ranked rows. D
 ## Batch Cap
 
 `get_metrics_batch` and `screen_symbols` accept at most 30 symbols per call. The cap is enforced server-side before any database lookup or partial result construction.
+
+Both batch tools require `as_of_date`; callers should pass the active session date explicitly.
 
 If the cap is exceeded, the tool returns:
 
