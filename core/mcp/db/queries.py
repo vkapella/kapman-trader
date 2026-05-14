@@ -313,3 +313,85 @@ def screen_rows(conn, *, as_of_date: Optional[date]) -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def screen_rows_for_symbols(conn, *, symbols: list[str], as_of_date: date) -> list[dict[str, Any]]:
+    if not symbols:
+        return []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH requested AS (
+                SELECT DISTINCT UPPER(symbol) AS symbol
+                FROM unnest(%s::text[]) AS supplied(symbol)
+            ), t AS (
+                SELECT id::text AS ticker_id, UPPER(symbol) AS symbol
+                FROM public.tickers
+                WHERE UPPER(symbol) = ANY(%s)
+            ), d AS (
+                SELECT
+                    ranked.ticker_id,
+                    ranked.ny_date,
+                    ranked.time,
+                    ranked.wyckoff_regime,
+                    ranked.primary_event,
+                    ranked.dealer_metrics_json,
+                    ranked.volatility_metrics_json,
+                    ranked.price_metrics_json
+                FROM (
+                    SELECT
+                        ds.ticker_id::text AS ticker_id,
+                        (ds.time AT TIME ZONE 'America/New_York')::date AS ny_date,
+                        ds.time,
+                        ds.wyckoff_regime,
+                        ds.primary_event,
+                        ds.dealer_metrics_json,
+                        ds.volatility_metrics_json,
+                        ds.price_metrics_json,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ds.ticker_id
+                            ORDER BY (ds.time AT TIME ZONE 'America/New_York')::date DESC, ds.time DESC
+                        ) AS rn
+                    FROM public.daily_snapshots ds
+                    WHERE (ds.time AT TIME ZONE 'America/New_York')::date <= %s
+                ) ranked
+                WHERE ranked.rn = 1
+            )
+            SELECT
+                t.symbol,
+                t.ticker_id,
+                d.ny_date,
+                d.wyckoff_regime,
+                d.primary_event,
+                d.dealer_metrics_json,
+                d.volatility_metrics_json,
+                d.price_metrics_json
+            FROM requested r
+            JOIN t ON t.symbol = r.symbol
+            LEFT JOIN d ON d.ticker_id = t.ticker_id
+            ORDER BY t.symbol ASC
+            """,
+            (symbols, symbols, as_of_date),
+        )
+        rows = cur.fetchall()
+
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        dealer = row[5] or {}
+        vol = row[6] or {}
+        price = row[7] or {}
+        result.append(
+            {
+                "symbol": row[0],
+                "ticker_id": row[1],
+                "snapshot_date": row[2].isoformat() if row[2] else None,
+                "regime": row[3],
+                "primary_event": row[4],
+                "dgpi": dealer.get("dgpi"),
+                "iv_rank": vol.get("iv_rank"),
+                "rvol": price.get("rvol"),
+                "has_snapshot": row[2] is not None,
+            }
+        )
+    return result

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Minor MCP tool surface expansion with `get_metrics_batch` and `screen_symbols`.
 - Initial database schema with TimescaleDB hypertables
 - Core tables: `tickers`, `portfolios`, `ohlcv_daily`, `daily_snapshots`
 - Basic portfolio management functionality

@@ -10,6 +10,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.mcp.tools.metrics import get_metrics
+from core.mcp.tools.metrics_batch import get_metrics_batch
+from core.mcp.tools.screen_symbols import screen_symbols
 from core.mcp.tools.screen_watchlist import screen_watchlist
 from core.mcp.tools.wyckoff_proposal import get_wyckoff_proposal_context
 
@@ -17,6 +19,8 @@ from core.mcp.tools.wyckoff_proposal import get_wyckoff_proposal_context
 TOOLS: dict[str, Any] = {
     "get_wyckoff_proposal_context": get_wyckoff_proposal_context,
     "get_metrics": get_metrics,
+    "get_metrics_batch": get_metrics_batch,
+    "screen_symbols": screen_symbols,
     "screen_watchlist": screen_watchlist,
 }
 
@@ -60,6 +64,30 @@ def _tool_descriptors() -> list[dict[str, Any]]:
                     "filters": {"type": ["object", "null"]},
                     "limit": {"type": "integer", "default": 50},
                 },
+            },
+        },
+        {
+            "name": "get_metrics_batch",
+            "description": "Return normalized metrics for up to 30 supplied symbols",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbols": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+                    "as_of_date": {"type": "string"},
+                },
+                "required": ["symbols", "as_of_date"],
+            },
+        },
+        {
+            "name": "screen_symbols",
+            "description": "Filter and rank up to 30 supplied symbols",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbols": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+                    "as_of_date": {"type": "string"},
+                },
+                "required": ["symbols", "as_of_date"],
             },
         },
     ]
